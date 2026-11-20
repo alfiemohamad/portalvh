@@ -16,6 +16,9 @@ backend/server
 !.env.example
 backend/.env
 
+# Local-only documentation
+README.local.md
+
 # Local runtime data & uploads
 backend/data/
 uploads/
