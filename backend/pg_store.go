@@ -164,6 +164,17 @@ func initPostgresSchema(db *sql.DB) error {
 			phone TEXT NOT NULL,
 			whatsapp TEXT NOT NULL
 		);`,
+		`CREATE TABLE IF NOT EXISTS audit_logs (
+			id TEXT PRIMARY KEY,
+			actor_name TEXT NOT NULL,
+			actor_role TEXT NOT NULL,
+			house_code TEXT NOT NULL DEFAULT '',
+			action TEXT NOT NULL,
+			target TEXT NOT NULL,
+			details TEXT NOT NULL DEFAULT '',
+			ip_address TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL
+		);`,
 	}
 
 	for _, stmt := range stmts {
@@ -437,6 +448,21 @@ func (s *Store) loadFromPostgres() error {
 	}
 	rows.Close()
 
+	// Audit Logs
+	rows, err = s.pg.Query(`SELECT id, actor_name, actor_role, house_code, action, target, details, ip_address, created_at FROM audit_logs ORDER BY created_at DESC LIMIT 500`)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var l AuditLog
+		if err := rows.Scan(&l.ID, &l.ActorName, &l.ActorRole, &l.HouseCode, &l.Action, &l.Target, &l.Details, &l.IPAddress, &l.CreatedAt); err != nil {
+			rows.Close()
+			return err
+		}
+		db.AuditLogs = append(db.AuditLogs, l)
+	}
+	rows.Close()
+
 	s.db = db
 	return nil
 }
@@ -452,7 +478,7 @@ func (s *Store) savePostgresLocked() error {
 		"finance_items", "finance_reports", "announcements", "resident_houses",
 		"facilities", "facility_bookings", "tickets", "access_card_requests",
 		"borrowable_assets", "asset_loans", "cctv_cameras", "umkm_items",
-		"gallery_photos", "panic_alerts", "pengurus_contacts",
+		"gallery_photos", "panic_alerts", "pengurus_contacts", "audit_logs",
 	}
 	for _, tbl := range tables {
 		if _, err := tx.Exec("DELETE FROM " + tbl); err != nil {
@@ -547,6 +573,12 @@ func (s *Store) savePostgresLocked() error {
 	for _, c := range s.db.Contacts {
 		if _, err := tx.Exec(`INSERT INTO pengurus_contacts (id, name, position, house, phone, whatsapp) VALUES ($1,$2,$3,$4,$5,$6)`,
 			c.ID, c.Name, c.Position, c.House, c.Phone, c.WhatsApp); err != nil {
+			return err
+		}
+	}
+	for _, l := range s.db.AuditLogs {
+		if _, err := tx.Exec(`INSERT INTO audit_logs (id, actor_name, actor_role, house_code, action, target, details, ip_address, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+			l.ID, l.ActorName, l.ActorRole, l.HouseCode, l.Action, l.Target, l.Details, l.IPAddress, l.CreatedAt); err != nil {
 			return err
 		}
 	}

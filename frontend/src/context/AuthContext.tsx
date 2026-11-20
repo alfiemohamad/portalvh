@@ -1,42 +1,57 @@
 import React, { createContext, useContext, useState } from 'react';
 import { api } from '../api/client';
-
-interface AdminUser {
-  username: string;
-  name: string;
-  role: string;
-}
+import type { SessionUser } from '../types';
 
 interface AuthContextValue {
-  user: AdminUser | null;
+  user: SessionUser | null;
+  isAuthenticated: boolean;
   isAdmin: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  loginResident: (houseCode: string, password: string) => Promise<void>;
+  loginAdmin: (username: string, password: string) => Promise<void>;
   logout: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<AdminUser | null>(() => {
-    const saved = localStorage.getItem('vh_admin_user');
+  const [user, setUser] = useState<SessionUser | null>(() => {
+    const saved = localStorage.getItem('vh_user');
     return saved ? JSON.parse(saved) : null;
   });
 
-  const login = async (username: string, password: string) => {
-    const res = await api.login(username, password);
-    localStorage.setItem('vh_admin_token', res.token);
-    localStorage.setItem('vh_admin_user', JSON.stringify(res.user));
-    setUser(res.user);
+  const saveSession = (token: string, u: SessionUser) => {
+    localStorage.setItem('vh_token', token);
+    localStorage.setItem('vh_user', JSON.stringify(u));
+    setUser(u);
+  };
+
+  const loginResident = async (houseCode: string, password: string) => {
+    const res = await api.loginResident(houseCode, password);
+    saveSession(res.token, res.user);
+  };
+
+  const loginAdmin = async (username: string, password: string) => {
+    const res = await api.loginAdmin(username, password);
+    saveSession(res.token, res.user);
   };
 
   const logout = () => {
-    localStorage.removeItem('vh_admin_token');
-    localStorage.removeItem('vh_admin_user');
+    localStorage.removeItem('vh_token');
+    localStorage.removeItem('vh_user');
     setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, isAdmin: !!user, login, logout }}>
+    <AuthContext.Provider
+      value={{
+        user,
+        isAuthenticated: !!user,
+        isAdmin: user?.role === 'Pengurus',
+        loginResident,
+        loginAdmin,
+        logout,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

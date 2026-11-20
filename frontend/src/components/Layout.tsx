@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet } from 'react-router-dom';
 import {
   Bell,
   Home,
@@ -11,13 +11,10 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { PanicModal } from './PanicModal';
-import { LoginModal } from './LoginModal';
 
 export function Layout() {
-  const { isAdmin, logout } = useAuth();
-  const navigate = useNavigate();
+  const { user, isAdmin, logout } = useAuth();
   const [panicOpen, setPanicOpen] = useState(false);
-  const [loginOpen, setLoginOpen] = useState(false);
 
   const navItems = [
     { to: '/', label: 'Beranda', icon: Home, end: true },
@@ -32,12 +29,12 @@ export function Layout() {
       <header className="sticky top-0 z-40 bg-[#1b4532] text-white shadow-md">
         <div className="mx-auto flex max-w-6xl items-center justify-between px-4 sm:px-6 h-16 md:h-[72px]">
           <Link to="/" className="flex items-center gap-3 group">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#ee4129] text-white shadow-sm transition group-hover:scale-105">
-              <Home className="w-5 h-5 stroke-[2.2]" />
-            </div>
-            <div className="leading-tight">
-              <div className="text-base font-bold tracking-tight text-white">Victoria Hill</div>
-              <div className="text-xs font-medium text-[#82e4b0]">Portal warga</div>
+            <div className="flex h-10 items-center justify-center rounded-xl bg-white px-2.5 py-1 shadow-sm transition group-hover:scale-105">
+              <img
+                src="/images/logo-vh.png"
+                alt="Forum Warga Victoria Hill"
+                className="h-8 w-auto object-contain"
+              />
             </div>
           </Link>
 
@@ -60,6 +57,22 @@ export function Layout() {
                 {item.label}
               </NavLink>
             ))}
+
+            {isAdmin && (
+              <NavLink
+                to="/pengurus"
+                className={({ isActive }) =>
+                  `flex items-center gap-2 rounded-full px-4 py-2 text-sm font-bold transition ${
+                    isActive
+                      ? 'bg-[#ee4129] text-white shadow-xs'
+                      : 'bg-white/15 text-[#82e4b0] hover:bg-white/25'
+                  }`
+                }
+              >
+                <ShieldCheck className="w-4 h-4" />
+                Menu Pengurus
+              </NavLink>
+            )}
           </nav>
 
           {/* Right Actions */}
@@ -74,37 +87,29 @@ export function Layout() {
             </button>
 
             {isAdmin ? (
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => navigate('/pengurus')}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-white px-4 py-2 text-xs sm:text-sm font-bold text-[#17251f] shadow-xs hover:bg-[#eef4ef] transition cursor-pointer"
-                >
-                  <ShieldCheck className="w-4 h-4 text-[#176b4b]" />
-                  <span>Pengurus</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    logout();
-                    navigate('/');
-                  }}
-                  className="rounded-full p-2 text-white/80 hover:bg-white/15 hover:text-white transition cursor-pointer"
-                  title="Keluar Pengurus"
-                  aria-label="Keluar Pengurus"
-                >
-                  <LogOut className="w-4 h-4" />
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setLoginOpen(true)}
-                className="rounded-full bg-white px-4 sm:px-5 py-2 text-xs sm:text-sm font-bold text-[#17251f] shadow-xs hover:bg-[#eef4ef] transition cursor-pointer"
+              <Link
+                to="/pengurus"
+                className="md:hidden inline-flex items-center gap-1.5 rounded-full bg-white px-3.5 py-1.5 text-xs font-bold text-[#17251f] shadow-xs"
               >
-                Masuk pengurus
-              </button>
+                <ShieldCheck className="w-4 h-4 text-[#176b4b]" />
+                Menu Pengurus
+              </Link>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-white/15 px-3.5 py-1.5 text-xs font-semibold text-[#82e4b0]">
+                {user?.house_code ? `Blok ${user.house_code}` : 'Warga'}
+              </span>
             )}
+
+            <button
+              type="button"
+              onClick={logout}
+              className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-2 text-xs font-semibold text-white/90 hover:bg-white/20 transition cursor-pointer"
+              title="Keluar"
+              aria-label="Keluar"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden sm:inline">Keluar</span>
+            </button>
           </div>
         </div>
       </header>
@@ -119,20 +124,24 @@ export function Layout() {
         <div className="mx-auto max-w-6xl px-6 py-6 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#506457]">
           <div className="flex items-center gap-2">
             <span className="inline-block h-2.5 w-2.5 rounded-full bg-[#176b4b]" />
-            <span className="font-semibold text-[#17251f]">Portal Warga Victoria Hill</span>
-            <span>· Layanan Lingkungan Digital</span>
+            <span className="font-semibold text-[#17251f]">Forum Warga Victoria Hill</span>
+            <span>· Masuk sebagai {user?.name}</span>
           </div>
           <div className="flex items-center gap-5">
             <Link to="/layanan" className="hover:text-[#176b4b]">Layanan</Link>
             <Link to="/fasilitas" className="hover:text-[#176b4b]">Fasilitas</Link>
             <Link to="/laporan-ipl" className="hover:text-[#176b4b]">Laporan IPL</Link>
             <Link to="/laporan-kas" className="hover:text-[#176b4b]">Laporan KAS</Link>
-            <Link to="/kontak" className="hover:text-[#176b4b]">Kontak Pengurus</Link>
+            {isAdmin && (
+              <Link to="/pengurus" className="font-semibold text-[#ee4129] hover:underline">
+                Dashboard Pengurus
+              </Link>
+            )}
           </div>
         </div>
       </footer>
 
-      {/* Mobile Bottom Navigation (matches Figma Frame 1-10) */}
+      {/* Mobile Bottom Navigation */}
       <nav
         className="md:hidden fixed bottom-0 inset-x-0 z-40 border-t border-[#dce5df] bg-white/95 backdrop-blur-md"
         aria-label="Navigasi cepat"
@@ -187,7 +196,6 @@ export function Layout() {
       </nav>
 
       <PanicModal open={panicOpen} onClose={() => setPanicOpen(false)} />
-      <LoginModal open={loginOpen} onClose={() => setLoginOpen(false)} />
     </div>
   );
 }

@@ -157,6 +157,7 @@ func (s *Server) handleImportFinance(w http.ResponseWriter, r *http.Request) {
 	_ = s.store.saveLocked()
 	s.store.mu.Unlock()
 
+	s.recordAudit(r, "IMPORT_FINANCE", reportType+" "+monthLabel, fmt.Sprintf("Impor %d transaksi dari %s", len(items), header.Filename))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"message": fmt.Sprintf("Berhasil mengimpor %d transaksi dari %s", len(items), header.Filename),
 		"report":  newReport,
@@ -249,6 +250,7 @@ func (s *Server) handleImportDirectory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordAudit(r, "IMPORT_DIRECTORY", "Direktori Warga", fmt.Sprintf("Impor %d data rumah dari %s", imported, header.Filename))
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"message":  fmt.Sprintf("Berhasil mengimpor %d data rumah dari %s", imported, header.Filename),
 		"imported": imported,

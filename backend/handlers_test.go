@@ -22,6 +22,8 @@ func setupTestMux(t *testing.T) http.Handler {
 	srv := NewServer(store, filepath.Join(tmp, "uploads"))
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/auth/login", srv.handleLogin)
+	mux.HandleFunc("GET /api/auth/houses", srv.handleAuthHouses)
+	mux.HandleFunc("GET /api/audit-logs", srv.requireAdmin(srv.handleAuditLogs))
 	mux.HandleFunc("GET /api/dashboard", srv.handleDashboard)
 	mux.HandleFunc("GET /api/directory", srv.handleDirectory)
 	mux.HandleFunc("GET /api/facilities", srv.handleFacilities)
@@ -42,6 +44,7 @@ func setupTestMux(t *testing.T) http.Handler {
 func TestCoreEndpoints(t *testing.T) {
 	t.Setenv("ADMIN_USERNAME", "pengurus")
 	t.Setenv("ADMIN_PASSWORD", "test-secret")
+	t.Setenv("RESIDENT_PASSWORD", "warga-secret")
 	mux := setupTestMux(t)
 
 	// 1. Dashboard
@@ -143,5 +146,27 @@ func TestCoreEndpoints(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("POST /api/directory/import csv got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 10. Resident Login + Download Audit Trail
+	resLoginBody := []byte(`{"mode":"resident","house_code":"U01","password":"warga-secret"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewReader(resLoginBody))
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/auth/login resident got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	adminToken, _ := loginRes["token"].(string)
+	req = httptest.NewRequest(http.MethodGet, "/api/audit-logs", nil)
+	req.Header.Set("Authorization", "Bearer "+adminToken)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/audit-logs got %d: %s", rec.Code, rec.Body.String())
+	}
+	var logs []AuditLog
+	if err := json.Unmarshal(rec.Body.Bytes(), &logs); err != nil || len(logs) == 0 {
+		t.Fatalf("expected non-empty audit logs, got %s", rec.Body.String())
 	}
 }

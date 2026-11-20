@@ -166,6 +166,25 @@ export interface PengurusContact {
   whatsapp: string;
 }
 
+export interface SessionUser {
+  username: string;
+  name: string;
+  role: 'Warga' | 'Pengurus';
+  house_code: string;
+}
+
+export interface AuditLog {
+  id: string;
+  actor_name: string;
+  actor_role: string;
+  house_code: string;
+  action: string;
+  target: string;
+  details: string;
+  ip_address: string;
+  created_at: string;
+}
+
 export interface DashboardData {
   announcements: Announcement[];
   gallery: GalleryPhoto[];

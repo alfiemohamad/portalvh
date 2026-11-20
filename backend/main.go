@@ -85,6 +85,8 @@ func main() {
 
 	// Auth
 	mux.HandleFunc("POST /api/auth/login", srv.handleLogin)
+	mux.HandleFunc("GET /api/auth/houses", srv.handleAuthHouses)
+	mux.HandleFunc("GET /api/audit-logs", srv.requireAdmin(srv.handleAuditLogs))
 
 	// Public & Resident Endpoints
 	mux.HandleFunc("GET /api/dashboard", srv.handleDashboard)

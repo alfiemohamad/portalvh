@@ -17,11 +17,18 @@ import (
 	"github.com/xuri/excelize/v2"
 )
 
+type SessionUser struct {
+	Username  string `json:"username"`
+	Name      string `json:"name"`
+	Role      string `json:"role"` // "Warga" | "Pengurus"
+	HouseCode string `json:"house_code"`
+}
+
 type Server struct {
 	store     *Store
 	uploadDir string
 	tokensMu  sync.RWMutex
-	tokens    map[string]string // token -> admin username
+	tokens    map[string]SessionUser
 }
 
 func NewServer(store *Store, uploadDir string) *Server {
@@ -29,7 +36,7 @@ func NewServer(store *Store, uploadDir string) *Server {
 	return &Server{
 		store:     store,
 		uploadDir: uploadDir,
-		tokens:    make(map[string]string),
+		tokens:    make(map[string]SessionUser),
 	}
 }
 
@@ -49,16 +56,89 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func (s *Server) isAdmin(r *http.Request) bool {
+func (s *Server) currentUser(r *http.Request) (SessionUser, bool) {
+	token := ""
 	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return false
+	if strings.HasPrefix(auth, "Bearer ") {
+		token = strings.TrimPrefix(auth, "Bearer ")
+	} else if qToken := strings.TrimSpace(r.URL.Query().Get("token")); qToken != "" {
+		token = qToken
 	}
-	token := strings.TrimPrefix(auth, "Bearer ")
+	if token == "" {
+		return SessionUser{}, false
+	}
 	s.tokensMu.RLock()
 	defer s.tokensMu.RUnlock()
-	_, ok := s.tokens[token]
-	return ok
+	u, ok := s.tokens[token]
+	return u, ok
+}
+
+func (s *Server) isAdmin(r *http.Request) bool {
+	u, ok := s.currentUser(r)
+	return ok && u.Role == "Pengurus"
+}
+
+func clientIP(r *http.Request) string {
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		return strings.TrimSpace(strings.Split(fwd, ",")[0])
+	}
+	return r.RemoteAddr
+}
+
+func (s *Server) recordAudit(r *http.Request, action, target, details string) {
+	actorName := "Tamu / Publik"
+	actorRole := "Publik"
+	houseCode := "-"
+	if u, ok := s.currentUser(r); ok {
+		actorName = u.Name
+		actorRole = u.Role
+		if u.HouseCode != "" {
+			houseCode = u.HouseCode
+		}
+	}
+	entry := AuditLog{
+		ID:        generateID("aud"),
+		ActorName: actorName,
+		ActorRole: actorRole,
+		HouseCode: houseCode,
+		Action:    action,
+		Target:    target,
+		Details:   details,
+		IPAddress: clientIP(r),
+		CreatedAt: time.Now(),
+	}
+	s.store.mu.Lock()
+	s.store.db.AuditLogs = append([]AuditLog{entry}, s.store.db.AuditLogs...)
+	if len(s.store.db.AuditLogs) > 500 {
+		s.store.db.AuditLogs = s.store.db.AuditLogs[:500]
+	}
+	_ = s.store.saveLocked()
+	s.store.mu.Unlock()
+}
+
+func (s *Server) recordAuditUser(u SessionUser, r *http.Request, action, target, details string) {
+	houseCode := u.HouseCode
+	if houseCode == "" {
+		houseCode = "-"
+	}
+	entry := AuditLog{
+		ID:        generateID("aud"),
+		ActorName: u.Name,
+		ActorRole: u.Role,
+		HouseCode: houseCode,
+		Action:    action,
+		Target:    target,
+		Details:   details,
+		IPAddress: clientIP(r),
+		CreatedAt: time.Now(),
+	}
+	s.store.mu.Lock()
+	s.store.db.AuditLogs = append([]AuditLog{entry}, s.store.db.AuditLogs...)
+	if len(s.store.db.AuditLogs) > 500 {
+		s.store.db.AuditLogs = s.store.db.AuditLogs[:500]
+	}
+	_ = s.store.saveLocked()
+	s.store.mu.Unlock()
 }
 
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
@@ -71,16 +151,100 @@ func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// POST /api/auth/login
+// GET /api/auth/houses -> daftar kode blok & rumah untuk dropdown login warga
+func (s *Server) handleAuthHouses(w http.ResponseWriter, r *http.Request) {
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+	out := make([]map[string]string, 0, len(s.store.db.Houses))
+	for _, h := range s.store.db.Houses {
+		out = append(out, map[string]string{
+			"code":   h.Code,
+			"block":  h.Block,
+			"status": h.Status,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// POST /api/auth/login -> mendukung mode "resident" (blok rumah + password warga) dan "admin" (username + password pengurus)
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Mode      string `json:"mode"` // "resident" or "admin"
+		HouseCode string `json:"house_code"`
+		Username  string `json:"username"`
+		Password  string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "Format request tidak valid")
 		return
 	}
+
+	mode := strings.ToLower(strings.TrimSpace(body.Mode))
+	if mode == "" {
+		if strings.TrimSpace(body.HouseCode) != "" {
+			mode = "resident"
+		} else {
+			mode = "admin"
+		}
+	}
+
+	if mode == "resident" {
+		resPass := os.Getenv("RESIDENT_PASSWORD")
+		if resPass == "" {
+			writeError(w, http.StatusServiceUnavailable, "Password warga belum dikonfigurasi di environment (.env)")
+			return
+		}
+		code := strings.ToUpper(strings.TrimSpace(body.HouseCode))
+		if code == "" {
+			writeError(w, http.StatusBadRequest, "Blok / nomor rumah wajib dipilih")
+			return
+		}
+		if body.Password != resPass {
+			writeError(w, http.StatusUnauthorized, "Password warga salah")
+			return
+		}
+
+		// Lookup resident name if registered
+		displayName := "Warga " + code
+		found := false
+		s.store.mu.RLock()
+		for _, h := range s.store.db.Houses {
+			if strings.EqualFold(h.Code, code) {
+				found = true
+				if h.HeadOfHome != "" {
+					displayName = h.HeadOfHome + " (" + h.Code + ")"
+				}
+				code = h.Code
+				break
+			}
+		}
+		s.store.mu.RUnlock()
+		if !found {
+			writeError(w, http.StatusNotFound, "Kode rumah tidak ditemukan di direktori Victoria Hill")
+			return
+		}
+
+		b := make([]byte, 16)
+		_, _ = rand.Read(b)
+		token := hex.EncodeToString(b)
+		user := SessionUser{
+			Username:  code,
+			Name:      displayName,
+			Role:      "Warga",
+			HouseCode: code,
+		}
+		s.tokensMu.Lock()
+		s.tokens[token] = user
+		s.tokensMu.Unlock()
+
+		s.recordAuditUser(user, r, "LOGIN_WARGA", "Portal Warga", "Login menggunakan blok rumah "+code)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token": token,
+			"user":  user,
+		})
+		return
+	}
+
 	adminUser := strings.TrimSpace(strings.ToLower(os.Getenv("ADMIN_USERNAME")))
 	adminPass := os.Getenv("ADMIN_PASSWORD")
 	if adminUser == "" || adminPass == "" {
@@ -92,16 +256,20 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		b := make([]byte, 16)
 		_, _ = rand.Read(b)
 		token := hex.EncodeToString(b)
+		user := SessionUser{
+			Username:  u,
+			Name:      "Pengurus Victoria Hill",
+			Role:      "Pengurus",
+			HouseCode: "Admin",
+		}
 		s.tokensMu.Lock()
-		s.tokens[token] = "Pengurus Victoria Hill"
+		s.tokens[token] = user
 		s.tokensMu.Unlock()
+
+		s.recordAuditUser(user, r, "LOGIN_PENGURUS", "Dashboard Pengurus", "Login sebagai pengurus ("+u+")")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"token": token,
-			"user": map[string]string{
-				"username": u,
-				"name":     "Pengurus Victoria Hill",
-				"role":     "Pengurus",
-			},
+			"user":  user,
 		})
 		return
 	}
@@ -202,6 +370,7 @@ func (s *Server) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
 		s.store.db.Announcements = append([]Announcement{item}, s.store.db.Announcements...)
 		_ = s.store.saveLocked()
 		s.store.mu.Unlock()
+		s.recordAudit(r, "CREATE_ANNOUNCEMENT", item.Title, "Kategori: "+item.Category)
 		writeJSON(w, http.StatusCreated, item)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak didukung")
@@ -369,6 +538,7 @@ func (s *Server) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 	s.store.db.Bookings = append([]FacilityBooking{booking}, s.store.db.Bookings...)
 	_ = s.store.saveLocked()
+	s.recordAudit(r, "CREATE_BOOKING", booking.FacilityName, booking.Date+" "+booking.TimeSlot)
 	writeJSON(w, http.StatusCreated, booking)
 }
 
@@ -436,6 +606,7 @@ func (s *Server) handleTickets(w http.ResponseWriter, r *http.Request) {
 		s.store.db.Tickets = append([]Ticket{ticket}, s.store.db.Tickets...)
 		_ = s.store.saveLocked()
 		s.store.mu.Unlock()
+		s.recordAudit(r, "CREATE_TICKET", ticket.TicketNo, ticket.Category+" - "+ticket.Location)
 		writeJSON(w, http.StatusCreated, ticket)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak didukung")
@@ -507,6 +678,7 @@ func (s *Server) handleAccessCards(w http.ResponseWriter, r *http.Request) {
 		s.store.db.AccessCardRequests = append([]AccessCardRequest{req}, s.store.db.AccessCardRequests...)
 		_ = s.store.saveLocked()
 		s.store.mu.Unlock()
+		s.recordAudit(r, "CREATE_ACCESS_CARD", req.RequestNo, req.FullName+" ("+req.Block+" No. "+req.HouseNo+")")
 		writeJSON(w, http.StatusCreated, req)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak didukung")
@@ -601,6 +773,7 @@ func (s *Server) handleCreateAssetLoan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.store.db.AssetLoans = append([]AssetLoan{loan}, s.store.db.AssetLoans...)
 	_ = s.store.saveLocked()
+	s.recordAudit(r, "CREATE_ASSET_LOAN", loan.AssetName, fmt.Sprintf("%d unit (%s)", loan.Quantity, loan.HouseCode))
 	writeJSON(w, http.StatusCreated, loan)
 }
 
@@ -690,6 +863,7 @@ func (s *Server) handleDownloadFinance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if format == "xlsx" {
+		s.recordAudit(r, "DOWNLOAD_"+target.Type+"_XLSX", target.MonthLabel, fmt.Sprintf("Unduh laporan %s (%s) format Excel", target.Type, target.MonthLabel))
 		f := excelize.NewFile()
 		sheet := "Laporan"
 		_ = f.SetSheetName("Sheet1", sheet)
@@ -708,6 +882,7 @@ func (s *Server) handleDownloadFinance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.recordAudit(r, "DOWNLOAD_"+target.Type+"_CSV", target.MonthLabel, fmt.Sprintf("Unduh laporan %s (%s) format CSV", target.Type, target.MonthLabel))
 	filename := fmt.Sprintf("Laporan_%s_VictoriaHill_%s.csv", target.Type, target.Period)
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
@@ -798,6 +973,7 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 		s.store.db.PanicAlerts = append([]PanicAlert{alert}, s.store.db.PanicAlerts...)
 		_ = s.store.saveLocked()
 		s.store.mu.Unlock()
+		s.recordAudit(r, "TRIGGER_PANIC", alert.Category, alert.ReporterName+" ("+alert.HouseCode+")")
 		writeJSON(w, http.StatusCreated, alert)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "Method tidak didukung")
@@ -858,4 +1034,76 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		"url":      "/uploads/" + filename,
 		"filename": header.Filename,
 	})
+}
+
+// GET /api/audit-logs?q=...&action=...&download=csv|xlsx (admin only)
+func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	actionFilter := strings.TrimSpace(r.URL.Query().Get("action"))
+	download := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("download")))
+
+	s.store.mu.RLock()
+	filtered := make([]AuditLog, 0, len(s.store.db.AuditLogs))
+	for _, l := range s.store.db.AuditLogs {
+		if actionFilter != "" && actionFilter != "ALL" && l.Action != actionFilter {
+			continue
+		}
+		if q != "" &&
+			!strings.Contains(strings.ToLower(l.ActorName), q) &&
+			!strings.Contains(strings.ToLower(l.HouseCode), q) &&
+			!strings.Contains(strings.ToLower(l.Action), q) &&
+			!strings.Contains(strings.ToLower(l.Target), q) &&
+			!strings.Contains(strings.ToLower(l.Details), q) {
+			continue
+		}
+		filtered = append(filtered, l)
+	}
+	s.store.mu.RUnlock()
+
+	if download == "xlsx" {
+		f := excelize.NewFile()
+		sheet := "AuditTrail"
+		_ = f.SetSheetName("Sheet1", sheet)
+		_ = f.SetSheetRow(sheet, "A1", &[]string{"Waktu", "Aktor", "Role", "Blok", "Aksi", "Target", "Detail", "IP Address"})
+		for idx, l := range filtered {
+			cell := fmt.Sprintf("A%d", idx+2)
+			_ = f.SetSheetRow(sheet, cell, &[]string{
+				l.CreatedAt.Format("2006-01-02 15:04:05"),
+				l.ActorName,
+				l.ActorRole,
+				l.HouseCode,
+				l.Action,
+				l.Target,
+				l.Details,
+				l.IPAddress,
+			})
+		}
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		w.Header().Set("Content-Disposition", `attachment; filename="Audit_Trail_VictoriaHill.xlsx"`)
+		_ = f.Write(w)
+		return
+	}
+
+	if download == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="Audit_Trail_VictoriaHill.csv"`)
+		cw := csv.NewWriter(w)
+		_ = cw.Write([]string{"Waktu", "Aktor", "Role", "Blok", "Aksi", "Target", "Detail", "IP Address"})
+		for _, l := range filtered {
+			_ = cw.Write([]string{
+				l.CreatedAt.Format("2006-01-02 15:04:05"),
+				l.ActorName,
+				l.ActorRole,
+				l.HouseCode,
+				l.Action,
+				l.Target,
+				l.Details,
+				l.IPAddress,
+			})
+		}
+		cw.Flush()
+		return
+	}
+
+	writeJSON(w, http.StatusOK, filtered)
 }

@@ -170,6 +170,18 @@ type PengurusContact struct {
 	WhatsApp string `json:"whatsapp"`
 }
 
+type AuditLog struct {
+	ID        string    `json:"id"`
+	ActorName string    `json:"actor_name"`
+	ActorRole string    `json:"actor_role"` // "Warga" | "Pengurus" | "Sistem"
+	HouseCode string    `json:"house_code"`
+	Action    string    `json:"action"`
+	Target    string    `json:"target"`
+	Details   string    `json:"details"`
+	IPAddress string    `json:"ip_address"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 type Database struct {
 	Announcements      []Announcement      `json:"announcements"`
 	Houses             []ResidentHouse     `json:"houses"`
@@ -185,4 +197,5 @@ type Database struct {
 	FinanceReports     []FinanceReport     `json:"finance_reports"`
 	PanicAlerts        []PanicAlert        `json:"panic_alerts"`
 	Contacts           []PengurusContact   `json:"contacts"`
+	AuditLogs          []AuditLog          `json:"audit_logs"`
 }

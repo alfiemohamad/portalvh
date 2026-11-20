@@ -2,6 +2,7 @@ import type {
   AccessCardRequest,
   Announcement,
   AssetLoan,
+  AuditLog,
   BorrowableAsset,
   CctvCamera,
   DashboardData,
@@ -10,14 +11,19 @@ import type {
   FinanceReport,
   PanicAlert,
   ResidentHouse,
+  SessionUser,
   Ticket,
   UmkmItem,
 } from '../types';
 
 const API_BASE = '/api';
 
+function getToken(): string | null {
+  return localStorage.getItem('vh_token');
+}
+
 function getAuthHeaders(): HeadersInit {
-  const token = localStorage.getItem('vh_admin_token');
+  const token = getToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -44,11 +50,31 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   // Auth
-  login: (username: string, password: string) =>
-    request<{ token: string; user: { username: string; name: string; role: string } }>('/auth/login', {
+  getAuthHouses: () =>
+    request<{ code: string; block: string; status: string }[]>('/auth/houses'),
+  loginResident: (house_code: string, password: string) =>
+    request<{ token: string; user: SessionUser }>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ mode: 'resident', house_code, password }),
     }),
+  loginAdmin: (username: string, password: string) =>
+    request<{ token: string; user: SessionUser }>('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ mode: 'admin', username, password }),
+    }),
+
+  // Audit Trail (Admin)
+  getAuditLogs: (q = '', action = 'ALL') => {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (action && action !== 'ALL') params.set('action', action);
+    const qs = params.toString() ? `?${params.toString()}` : '';
+    return request<AuditLog[]>(`/audit-logs${qs}`);
+  },
+  getAuditExportUrl: (format: 'csv' | 'xlsx' = 'csv') => {
+    const token = getToken() || '';
+    return `${API_BASE}/audit-logs?download=${format}&token=${encodeURIComponent(token)}`;
+  },
 
   // Dashboard
   getDashboard: () => request<DashboardData>('/dashboard'),
@@ -149,10 +175,14 @@ export const api = {
 
   // Finance
   getFinance: (type: 'IPL' | 'KAS') => request<FinanceReport[]>(`/finance?type=${type}`),
-  getFinanceDownloadUrl: (id: string, format: 'csv' | 'xlsx' = 'csv') =>
-    `${API_BASE}/finance/${id}/download?format=${format}`,
-  getTemplateUrl: (kind: 'finance' | 'directory', format: 'csv' | 'xlsx' = 'csv') =>
-    `${API_BASE}/templates/${kind}?format=${format}`,
+  getFinanceDownloadUrl: (id: string, format: 'csv' | 'xlsx' = 'csv') => {
+    const token = getToken() || '';
+    return `${API_BASE}/finance/${id}/download?format=${format}&token=${encodeURIComponent(token)}`;
+  },
+  getTemplateUrl: (kind: 'finance' | 'directory', format: 'csv' | 'xlsx' = 'csv') => {
+    const token = getToken() || '';
+    return `${API_BASE}/templates/${kind}?format=${format}&token=${encodeURIComponent(token)}`;
+  },
   importFinance: async (file: File, type: 'IPL' | 'KAS', period: string, monthLabel: string) => {
     const formData = new FormData();
     formData.append('file', file);
