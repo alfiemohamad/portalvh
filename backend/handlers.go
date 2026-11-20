@@ -848,16 +848,18 @@ func (s *Server) handleDownloadFinance(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.store.mu.RLock()
-	defer s.store.mu.RUnlock()
-
-	var target *FinanceReport
+	var target FinanceReport
+	found := false
 	for i := range s.store.db.FinanceReports {
 		if s.store.db.FinanceReports[i].ID == id {
-			target = &s.store.db.FinanceReports[i]
+			target = s.store.db.FinanceReports[i]
+			found = true
 			break
 		}
 	}
-	if target == nil {
+	s.store.mu.RUnlock()
+
+	if !found {
 		writeError(w, http.StatusNotFound, "Laporan tidak ditemukan")
 		return
 	}
