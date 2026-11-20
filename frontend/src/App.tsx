@@ -15,8 +15,24 @@ import { InfoPage } from './pages/InfoPage';
 import { ContactPage } from './pages/ContactPage';
 import { AdminPage } from './pages/AdminPage';
 
+function AdminGuard({ children }: { children: React.ReactNode }) {
+  const { isAdmin } = useAuth();
+  if (!isAdmin) {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}
+
 function AppRoutes() {
-  const { isAuthenticated } = useAuth();
+  const { isAuthenticated, checkingSession } = useAuth();
+
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#f7f9f7] text-sm font-semibold text-[#1b4532]">
+        Memuat sesi portal Victoria Hill...
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return (
@@ -40,7 +56,14 @@ function AppRoutes() {
         <Route path="/pinjam-barang" element={<AssetLoanPage />} />
         <Route path="/info" element={<InfoPage />} />
         <Route path="/kontak" element={<ContactPage />} />
-        <Route path="/pengurus" element={<AdminPage />} />
+        <Route
+          path="/pengurus"
+          element={
+            <AdminGuard>
+              <AdminPage />
+            </AdminGuard>
+          }
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

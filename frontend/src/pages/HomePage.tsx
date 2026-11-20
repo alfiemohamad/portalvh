@@ -200,10 +200,84 @@ export function HomePage() {
         </section>
       </div>
 
-      {/* Galleri aktifitas warga */}
+      {/* Ringkasan Keuangan Terbaru (IPL & KAS) */}
+      {data?.finance_summary && (
+        <section>
+          <div className="flex items-end justify-between gap-4 mb-4">
+            <div>
+              <h2 className="text-xl font-bold text-[#17251f]">Transparansi Keuangan Terbaru</h2>
+              <p className="text-sm text-[#506457]">Pantau saldo IPL, KAS Warga, dan KAS Mesjid secara langsung</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {data.finance_summary.ipl && (
+              <Link
+                to="/laporan-ipl"
+                className="rounded-3xl bg-white border border-[#dce5df] p-5 shadow-xs hover:border-[#176b4b] transition flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="rounded-full bg-[#dff0e4] px-2.5 py-0.5 font-bold text-[#176b4b]">IPL</span>
+                    <span className="text-[#5c6b63]">{data.finance_summary.ipl.month_label}</span>
+                  </div>
+                  <div className="mt-3 text-2xl font-black text-[#1b4532]">
+                    {formatRupiah(data.finance_summary.ipl.balance)}
+                  </div>
+                  <div className="mt-1 text-xs text-[#506457]">
+                    Masuk {formatRupiah(data.finance_summary.ipl.total_income)} · Keluar {formatRupiah(data.finance_summary.ipl.total_spend)}
+                  </div>
+                </div>
+                <span className="mt-3 text-xs font-bold text-[#176b4b]">Lihat detail cashflow IPL →</span>
+              </Link>
+            )}
+            {data.finance_summary.kas_warga && (
+              <Link
+                to="/laporan-kas"
+                className="rounded-3xl bg-white border border-[#dce5df] p-5 shadow-xs hover:border-[#176b4b] transition flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="rounded-full bg-[#eef4ef] px-2.5 py-0.5 font-bold text-[#1b4532]">KAS Warga</span>
+                    <span className="text-[#5c6b63]">{data.finance_summary.kas_warga.month_label}</span>
+                  </div>
+                  <div className="mt-3 text-2xl font-black text-[#1b4532]">
+                    {formatRupiah(data.finance_summary.kas_warga.balance)}
+                  </div>
+                  <div className="mt-1 text-xs text-[#506457]">
+                    Masuk {formatRupiah(data.finance_summary.kas_warga.total_income)} · Keluar {formatRupiah(data.finance_summary.kas_warga.total_spend)}
+                  </div>
+                </div>
+                <span className="mt-3 text-xs font-bold text-[#176b4b]">Lihat detail cashflow KAS →</span>
+              </Link>
+            )}
+            {data.finance_summary.kas_mesjid && (
+              <Link
+                to="/laporan-kas"
+                className="rounded-3xl bg-white border border-[#dce5df] p-5 shadow-xs hover:border-[#176b4b] transition flex flex-col justify-between"
+              >
+                <div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="rounded-full bg-[#fff7ed] px-2.5 py-0.5 font-bold text-[#873e13]">KAS Mesjid</span>
+                    <span className="text-[#5c6b63]">{data.finance_summary.kas_mesjid.month_label}</span>
+                  </div>
+                  <div className="mt-3 text-2xl font-black text-[#1b4532]">
+                    {formatRupiah(data.finance_summary.kas_mesjid.balance)}
+                  </div>
+                  <div className="mt-1 text-xs text-[#506457]">
+                    Masuk {formatRupiah(data.finance_summary.kas_mesjid.total_income)} · Keluar {formatRupiah(data.finance_summary.kas_mesjid.total_spend)}
+                  </div>
+                </div>
+                <span className="mt-3 text-xs font-bold text-[#176b4b]">Lihat detail KAS Mesjid →</span>
+              </Link>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Laporan & Galeri Kegiatan Warga */}
       <section>
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-[#17251f]">Galleri aktifitas warga</h2>
+          <h2 className="text-xl font-bold text-[#17251f]">Laporan & Galeri Kegiatan Warga</h2>
           <Link
             to="/info?section=galeri"
             className="text-sm font-semibold text-[#176b4b] underline underline-offset-4 hover:text-[#1b4532]"
@@ -213,25 +287,29 @@ export function HomePage() {
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {(data?.gallery ?? []).map((photo) => (
-            <div
-              key={photo.id}
+          {(data?.activities ?? []).slice(0, 4).map((act) => (
+            <Link
+              key={act.id}
+              to="/info?section=galeri"
               className="group overflow-hidden rounded-2xl bg-white border border-[#dce5df] shadow-xs"
             >
               <div className="aspect-[16/10] overflow-hidden bg-[#eef4ef]">
                 <img
-                  src={photo.image_url}
-                  alt={photo.title}
+                  src={act.image_url || '/images/gallery-1.png'}
+                  alt={act.title}
                   className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
                 />
               </div>
               <div className="p-3.5">
-                <div className="text-[11px] font-semibold text-[#176b4b]">{photo.date}</div>
-                <div className="mt-0.5 text-sm font-bold text-[#17251f] line-clamp-1">
-                  {photo.title}
+                <div className="text-[11px] font-semibold text-[#176b4b]">
+                  {act.category} · {act.activity_date}
                 </div>
+                <div className="mt-0.5 text-sm font-bold text-[#17251f] line-clamp-1">
+                  {act.title}
+                </div>
+                <p className="mt-1 text-xs text-[#506457] line-clamp-2">{act.summary}</p>
               </div>
-            </div>
+            </Link>
           ))}
         </div>
       </section>

@@ -34,6 +34,25 @@ func NewStore(filePath string) (*Store, error) {
 	return s, nil
 }
 
+func recalculateFinanceReport(rep *FinanceReport) {
+	income := 0
+	spend := 0
+	for i := range rep.Items {
+		if rep.Items[i].ID == "" {
+			rep.Items[i].ID = generateID("tx")
+		}
+		if rep.Items[i].Kind == "Keluar" {
+			spend += rep.Items[i].Amount
+		} else {
+			rep.Items[i].Kind = "Masuk"
+			income += rep.Items[i].Amount
+		}
+	}
+	rep.TotalIncome = income
+	rep.TotalSpend = spend
+	rep.Balance = rep.OpeningBalance + income - spend
+}
+
 func (s *Store) saveLocked() error {
 	if s.pg != nil {
 		return s.savePostgresLocked()
@@ -344,59 +363,150 @@ func seedDatabase() Database {
 			},
 		},
 		Gallery: []GalleryPhoto{
-			{ID: "gal-1", Title: "Jalan Santai & Hiking Pagi Warga", Date: "15 Nov 2026", Category: "Olahraga", ImageURL: "/images/gallery-1.png"},
-			{ID: "gal-2", Title: "Senam & Yoga Bersama Minggu Pagi", Date: "08 Nov 2026", Category: "Kesehatan", ImageURL: "/images/gallery-2.png"},
-			{ID: "gal-3", Title: "BBQ & Silaturahmi di Cabanna", Date: "25 Okt 2026", Category: "Sosial", ImageURL: "/images/facility-cabanna.png"},
-			{ID: "gal-4", Title: "Turnamen Basket Persahabatan VH", Date: "12 Okt 2026", Category: "Olahraga", ImageURL: "/images/facility-basket.png"},
+			{ID: "gal-1", Title: "Jalan Santai & Hiking Pagi Warga", Date: "2026-11-15", Category: "Olahraga", ImageURL: "/images/gallery-1.png"},
+			{ID: "gal-2", Title: "Senam & Yoga Bersama Minggu Pagi", Date: "2026-11-08", Category: "Kesehatan", ImageURL: "/images/gallery-2.png"},
+			{ID: "gal-3", Title: "BBQ & Silaturahmi di Cabanna", Date: "2026-10-25", Category: "Sosial", ImageURL: "/images/facility-cabanna.png"},
+			{ID: "gal-4", Title: "Turnamen Basket Persahabatan VH", Date: "2026-10-12", Category: "Olahraga", ImageURL: "/images/facility-basket.png"},
+		},
+		ActivityReports: []ActivityReport{
+			{
+				ID:           "act-1",
+				Title:        "Kerja Bakti & Fogging Lingkungan Victoria Hill",
+				Category:     "Kerja Bakti",
+				ActivityDate: "2026-11-15",
+				Location:     "Seluruh Blok & Taman Utama",
+				Summary:      "Pembersihan saluran air, pemangkasan dahan pohon, dan fogging nyamuk demam berdarah diikuti oleh 42 warga lintas blok.",
+				BudgetUsed:   1450000,
+				ImageURL:     "/images/gallery-1.png",
+				Author:       "Pengurus Victoria Hill",
+				CreatedAt:    now.Add(-48 * time.Hour),
+				UpdatedAt:    now.Add(-48 * time.Hour),
+			},
+			{
+				ID:           "act-2",
+				Title:        "Senam & Yoga Bersama Minggu Pagi",
+				Category:     "Kesehatan",
+				ActivityDate: "2026-11-08",
+				Location:     "Area Taman & Cabanna",
+				Summary:      "Kegiatan senam sehat rutin akhir pekan dilanjutkan sarapan bersama dan cek tekanan darah gratis bagi warga.",
+				BudgetUsed:   650000,
+				ImageURL:     "/images/gallery-2.png",
+				Author:       "Pengurus Victoria Hill",
+				CreatedAt:    now.Add(-168 * time.Hour),
+				UpdatedAt:    now.Add(-168 * time.Hour),
+			},
+			{
+				ID:           "act-3",
+				Title:        "BBQ & Silaturahmi Warga di Cabanna",
+				Category:     "Sosial",
+				ActivityDate: "2026-10-25",
+				Location:     "Cabanna Victoria Hill",
+				Summary:      "Malam keakraban warga baru dan lama dengan makan bersama serta diskusi program lingkungan triwulan IV.",
+				BudgetUsed:   1800000,
+				ImageURL:     "/images/facility-cabanna.png",
+				Author:       "Pengurus Victoria Hill",
+				CreatedAt:    now.Add(-360 * time.Hour),
+				UpdatedAt:    now.Add(-360 * time.Hour),
+			},
+			{
+				ID:           "act-4",
+				Title:        "Turnamen Basket Persahabatan VH",
+				Category:     "Olahraga",
+				ActivityDate: "2026-10-12",
+				Location:     "Lapangan Basket VH",
+				Summary:      "Pertandingan persahabatan antar-blok untuk mempererat kebersamaan warga dan remaja Victoria Hill.",
+				BudgetUsed:   750000,
+				ImageURL:     "/images/facility-basket.png",
+				Author:       "Pengurus Victoria Hill",
+				CreatedAt:    now.Add(-600 * time.Hour),
+				UpdatedAt:    now.Add(-600 * time.Hour),
+			},
 		},
 		FinanceReports: []FinanceReport{
 			{
-				ID:          "rep-ipl-2026-11",
-				Type:        "IPL",
-				Period:      "2026-11",
-				MonthLabel:  "November 2026",
-				TotalIncome: 18500000,
-				TotalSpend:  15200000,
-				Balance:     3300000,
-				PaidHouses:  28,
-				TotalHouses: 30,
+				ID:             "rep-ipl-2026-11",
+				Type:           "IPL",
+				Period:         "2026-11",
+				MonthLabel:     "November 2026",
+				OpeningBalance: 3100000,
+				TotalIncome:    18500000,
+				TotalSpend:     15200000,
+				Balance:        6400000,
+				PaidHouses:     28,
+				TotalHouses:    30,
+				Notes:          "Operasional keamanan, kebersihan, dan utilitas berjalan lancar.",
 				Items: []FinanceItem{
-					{Date: "2026-11-05", Description: "Penerimaan IPL Warga (28 Rumah)", Category: "Iuran IPL", Kind: "Masuk", Amount: 18500000},
-					{Date: "2026-11-10", Description: "Gaji Tenaga Keamanan & Security (4 Personel)", Category: "Keamanan", Kind: "Keluar", Amount: 9600000},
-					{Date: "2026-11-12", Description: "Pengangkutan Sampah & Kebersihan Lingkungan", Category: "Kebersihan", Kind: "Keluar", Amount: 3100000},
-					{Date: "2026-11-15", Description: "Listrik PJU, Gerbang Otomatis & Pompa Kolam", Category: "Utilitas", Kind: "Keluar", Amount: 2500000},
+					{ID: "tx-ipl-11-1", Date: "2026-11-05", Description: "Penerimaan IPL Warga (28 Rumah)", Category: "Iuran IPL", Kind: "Masuk", Amount: 18500000},
+					{ID: "tx-ipl-11-2", Date: "2026-11-10", Description: "Gaji Tenaga Keamanan & Security (4 Personel)", Category: "Keamanan", Kind: "Keluar", Amount: 9600000},
+					{ID: "tx-ipl-11-3", Date: "2026-11-12", Description: "Pengangkutan Sampah & Kebersihan Lingkungan", Category: "Kebersihan", Kind: "Keluar", Amount: 3100000},
+					{ID: "tx-ipl-11-4", Date: "2026-11-15", Description: "Listrik PJU, Gerbang Otomatis & Pompa Kolam", Category: "Utilitas", Kind: "Keluar", Amount: 2500000},
 				},
 			},
 			{
-				ID:          "rep-ipl-2026-10",
-				Type:        "IPL",
-				Period:      "2026-10",
-				MonthLabel:  "Oktober 2026",
-				TotalIncome: 19200000,
-				TotalSpend:  16100000,
-				Balance:     3100000,
-				PaidHouses:  30,
-				TotalHouses: 30,
+				ID:             "rep-ipl-2026-10",
+				Type:           "IPL",
+				Period:         "2026-10",
+				MonthLabel:     "Oktober 2026",
+				OpeningBalance: 0,
+				TotalIncome:    19200000,
+				TotalSpend:     16100000,
+				Balance:        3100000,
+				PaidHouses:     30,
+				TotalHouses:    30,
+				Notes:          "Seluruh 30 rumah aktif lunas IPL periode Oktober 2026.",
 				Items: []FinanceItem{
-					{Date: "2026-10-06", Description: "Penerimaan IPL Warga (30 Rumah)", Category: "Iuran IPL", Kind: "Masuk", Amount: 19200000},
-					{Date: "2026-10-10", Description: "Gaji Tenaga Keamanan & Security", Category: "Keamanan", Kind: "Keluar", Amount: 9600000},
-					{Date: "2026-10-14", Description: "Kebersihan, Taman & Fogging", Category: "Kebersihan", Kind: "Keluar", Amount: 3800000},
-					{Date: "2026-10-18", Description: "Listrik & Perawatan Fasum", Category: "Utilitas", Kind: "Keluar", Amount: 2700000},
+					{ID: "tx-ipl-10-1", Date: "2026-10-06", Description: "Penerimaan IPL Warga (30 Rumah)", Category: "Iuran IPL", Kind: "Masuk", Amount: 19200000},
+					{ID: "tx-ipl-10-2", Date: "2026-10-10", Description: "Gaji Tenaga Keamanan & Security", Category: "Keamanan", Kind: "Keluar", Amount: 9600000},
+					{ID: "tx-ipl-10-3", Date: "2026-10-14", Description: "Kebersihan, Taman & Fogging", Category: "Kebersihan", Kind: "Keluar", Amount: 3800000},
+					{ID: "tx-ipl-10-4", Date: "2026-10-18", Description: "Listrik & Perawatan Fasum", Category: "Utilitas", Kind: "Keluar", Amount: 2700000},
 				},
 			},
 			{
-				ID:          "rep-kas-2026-11",
-				Type:        "KAS",
-				Period:      "2026-11",
-				MonthLabel:  "November 2026",
-				TotalIncome: 6450000,
-				TotalSpend:  2850000,
-				Balance:     24600000,
+				ID:             "rep-kas_warga-2026-11",
+				Type:           "KAS_WARGA",
+				Period:         "2026-11",
+				MonthLabel:     "November 2026",
+				OpeningBalance: 16200000,
+				TotalIncome:    4200000,
+				TotalSpend:     2850000,
+				Balance:        17550000,
+				Notes:          "KAS Warga digunakan untuk kerja bakti, fogging, dan dana sosial.",
 				Items: []FinanceItem{
-					{Date: "2026-11-04", Description: "Iuran KAS Warga & Donasi QRIS", Category: "KAS Warga", Kind: "Masuk", Amount: 4200000},
-					{Date: "2026-11-07", Description: "Infaq KAS Mesjid Algulfrah", Category: "KAS Mesjid", Kind: "Masuk", Amount: 2250000},
-					{Date: "2026-11-11", Description: "Konsumsi Pengajian & Kerja Bakti", Category: "Kegiatan Sosial", Kind: "Keluar", Amount: 1450000},
-					{Date: "2026-11-16", Description: "Santunan & Dana Sosial Warga", Category: "Sosial", Kind: "Keluar", Amount: 1400000},
+					{ID: "tx-kw-11-1", Date: "2026-11-04", Description: "Iuran KAS Warga & Donasi QRIS", Category: "KAS Warga", Kind: "Masuk", Amount: 4200000},
+					{ID: "tx-kw-11-2", Date: "2026-11-11", Description: "Konsumsi Kerja Bakti & Fogging", Category: "Kegiatan Sosial", Kind: "Keluar", Amount: 1450000},
+					{ID: "tx-kw-11-3", Date: "2026-11-16", Description: "Santunan & Dana Sosial Warga", Category: "Sosial", Kind: "Keluar", Amount: 1400000},
+				},
+			},
+			{
+				ID:             "rep-kas_warga-2026-10",
+				Type:           "KAS_WARGA",
+				Period:         "2026-10",
+				MonthLabel:     "Oktober 2026",
+				OpeningBalance: 14500000,
+				TotalIncome:    3900000,
+				TotalSpend:     2200000,
+				Balance:        16200000,
+				Notes:          "Kas kegiatan silaturahmi BBQ & turnamen basket.",
+				Items: []FinanceItem{
+					{ID: "tx-kw-10-1", Date: "2026-10-05", Description: "Iuran KAS Warga Oktober", Category: "KAS Warga", Kind: "Masuk", Amount: 3900000},
+					{ID: "tx-kw-10-2", Date: "2026-10-12", Description: "Konsumsi & Air Mineral Turnamen Basket", Category: "Olahraga", Kind: "Keluar", Amount: 750000},
+					{ID: "tx-kw-10-3", Date: "2026-10-25", Description: "BBQ & Silaturahmi Warga di Cabanna", Category: "Sosial", Kind: "Keluar", Amount: 1450000},
+				},
+			},
+			{
+				ID:             "rep-kas_mesjid-2026-11",
+				Type:           "KAS_MESJID",
+				Period:         "2026-11",
+				MonthLabel:     "November 2026",
+				OpeningBalance: 6800000,
+				TotalIncome:    2250000,
+				TotalSpend:     950000,
+				Balance:        8100000,
+				Notes:          "Infaq dan operasional Mesjid Algulfrah Victoria Hill.",
+				Items: []FinanceItem{
+					{ID: "tx-km-11-1", Date: "2026-11-07", Description: "Infaq Jumat & QRIS KAS Mesjid Algulfrah", Category: "Infaq Mesjid", Kind: "Masuk", Amount: 2250000},
+					{ID: "tx-km-11-2", Date: "2026-11-14", Description: "Konsumsi Pengajian Rutin & Kebersihan Mesjid", Category: "Keagamaan", Kind: "Keluar", Amount: 600000},
+					{ID: "tx-km-11-3", Date: "2026-11-18", Description: "Perawatan AC & Sound System Mesjid", Category: "Perawatan", Kind: "Keluar", Amount: 350000},
 				},
 			},
 		},

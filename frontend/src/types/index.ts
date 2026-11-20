@@ -126,7 +126,22 @@ export interface GalleryPhoto {
   image_url: string;
 }
 
+export interface ActivityReport {
+  id: string;
+  title: string;
+  category: string;
+  activity_date: string;
+  location: string;
+  summary: string;
+  budget_used: number;
+  image_url: string;
+  author: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface FinanceItem {
+  id: string;
   date: string;
   description: string;
   category: string;
@@ -134,17 +149,46 @@ export interface FinanceItem {
   amount: number;
 }
 
+export type FinanceFundType = 'IPL' | 'KAS' | 'KAS_WARGA' | 'KAS_MESJID';
+
 export interface FinanceReport {
   id: string;
-  type: 'IPL' | 'KAS';
+  type: FinanceFundType;
   period: string;
   month_label: string;
+  opening_balance: number;
   total_income: number;
   total_spend: number;
   balance: number;
   paid_houses?: number;
   total_houses?: number;
+  notes?: string;
   items: FinanceItem[];
+}
+
+export interface EnvSettings {
+  bank_name: string;
+  account_number: string;
+  account_holder: string;
+  access_card_fee: number;
+  security_whatsapp: string;
+}
+
+export interface KasPaymentSubmission {
+  id: string;
+  fund_type: 'KAS_WARGA' | 'KAS_MESJID';
+  period: string;
+  payer_name: string;
+  house_code: string;
+  amount: number;
+  payment_date: string;
+  note: string;
+  proof_url: string;
+  status: 'Menunggu Verifikasi' | 'Disetujui' | 'Ditolak';
+  admin_note?: string;
+  finance_ref_id?: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface PanicAlert {
@@ -169,8 +213,9 @@ export interface PengurusContact {
 export interface SessionUser {
   username: string;
   name: string;
-  role: 'Warga' | 'Pengurus';
+  role: 'Warga' | 'Pengurus' | 'Bendahara' | 'Keamanan' | 'Admin';
   house_code: string;
+  permissions?: string[];
 }
 
 export interface AuditLog {
@@ -188,8 +233,14 @@ export interface AuditLog {
 export interface DashboardData {
   announcements: Announcement[];
   gallery: GalleryPhoto[];
+  activities?: ActivityReport[];
   umkm: UmkmItem[];
   contacts: PengurusContact[];
+  finance_summary?: {
+    ipl?: FinanceReport | null;
+    kas_warga?: FinanceReport | null;
+    kas_mesjid?: FinanceReport | null;
+  };
   stats: {
     total_houses: number;
     occupied_houses: number;

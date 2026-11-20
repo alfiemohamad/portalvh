@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { AlertTriangle, PhoneCall, ShieldAlert, X, CheckCircle2 } from 'lucide-react';
 import { api } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 
 interface PanicModalProps {
   open: boolean;
@@ -8,6 +9,7 @@ interface PanicModalProps {
 }
 
 export function PanicModal({ open, onClose }: PanicModalProps) {
+  const { user } = useAuth();
   const [reporterName, setReporterName] = useState('');
   const [houseCode, setHouseCode] = useState('');
   const [category, setCategory] = useState('Keamanan');
@@ -15,6 +17,15 @@ export function PanicModal({ open, onClose }: PanicModalProps) {
   const [submitting, setSubmitting] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (open && user) {
+      if (!reporterName && user.name) setReporterName(user.name);
+      if (!houseCode && user.house_code && user.house_code !== 'Admin') {
+        setHouseCode(user.house_code);
+      }
+    }
+  }, [open, user]);
 
   if (!open) return null;
 

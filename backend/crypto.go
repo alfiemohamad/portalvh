@@ -5,21 +5,63 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"io"
+	"log"
 	"os"
 	"strings"
+	"sync"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const encPrefix = "enc:"
 
+var warnDefaultKeyOnce sync.Once
+
 func getEncryptionKey() []byte {
 	secret := os.Getenv("DATA_ENCRYPTION_KEY")
 	if secret == "" {
+		if strings.EqualFold(os.Getenv("APP_ENV"), "production") {
+			log.Fatal("DATA_ENCRYPTION_KEY wajib diset pada mode production")
+		}
+		warnDefaultKeyOnce.Do(func() {
+			log.Println("[PERINGATAN] DATA_ENCRYPTION_KEY belum diset, menggunakan fallback key development.")
+		})
 		secret = "victoria-hill-default-dev-key"
 	}
 	sum := sha256.Sum256([]byte(secret))
 	return sum[:]
+}
+
+// HashPassword menghasilkan hash bcrypt untuk penyimpanan password yang aman (siap untuk password per-warga & multi-admin).
+func HashPassword(plain string) (string, error) {
+	b, err := bcrypt.GenerateFromPassword([]byte(plain), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// CheckPassword memverifikasi password plaintext terhadap hash bcrypt.
+func CheckPassword(hash, plain string) bool {
+	if hash == "" || plain == "" {
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(plain)) == nil
+}
+
+// ConstantTimeEqual membandingkan dua string secara aman dari timing attack.
+func ConstantTimeEqual(a, b string) bool {
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
+// HashToken mengubah bearer token menjadi SHA-256 hex untuk disimpan di database sesi.
+func HashToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 // EncryptText encrypts sensitive text with AES-256-GCM before storing in PostgreSQL.

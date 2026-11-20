@@ -1,14 +1,19 @@
 import type {
   AccessCardRequest,
+  ActivityReport,
   Announcement,
   AssetLoan,
   AuditLog,
   BorrowableAsset,
   CctvCamera,
   DashboardData,
+  EnvSettings,
   Facility,
   FacilityBooking,
+  FinanceFundType,
+  FinanceItem,
   FinanceReport,
+  KasPaymentSubmission,
   PanicAlert,
   ResidentHouse,
   SessionUser,
@@ -41,11 +46,47 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     headers,
   });
 
+  if (res.status === 401 && path !== '/auth/login') {
+    localStorage.removeItem('vh_token');
+    localStorage.removeItem('vh_user');
+    window.dispatchEvent(new Event('vh:unauthorized'));
+  }
+
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({ error: 'Terjadi kesalahan pada server' }));
     throw new Error(errBody.error || `HTTP ${res.status}`);
   }
   return res.json();
+}
+
+// Unduh file secara aman menggunakan Authorization header (tanpa menaruh token di URL)
+async function downloadBlob(path: string, fallbackFilename: string): Promise<void> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: getAuthHeaders(),
+  });
+  if (res.status === 401) {
+    localStorage.removeItem('vh_token');
+    localStorage.removeItem('vh_user');
+    window.dispatchEvent(new Event('vh:unauthorized'));
+    throw new Error('Sesi telah berakhir. Silakan login kembali.');
+  }
+  if (!res.ok) {
+    const errBody = await res.json().catch(() => ({ error: 'Gagal mengunduh file' }));
+    throw new Error(errBody.error || `HTTP ${res.status}`);
+  }
+  const blob = await res.blob();
+  const disposition = res.headers.get('Content-Disposition') || '';
+  const match = disposition.match(/filename="?([^"]+)"?/i);
+  const filename = match?.[1] || fallbackFilename;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 export const api = {
@@ -62,6 +103,9 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ mode: 'admin', username, password }),
     }),
+  getMe: () => request<{ user: SessionUser }>('/auth/me'),
+  logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
+  getSettings: () => request<EnvSettings>('/settings'),
 
   // Audit Trail (Admin)
   getAuditLogs: (q = '', action = 'ALL') => {
@@ -71,10 +115,8 @@ export const api = {
     const qs = params.toString() ? `?${params.toString()}` : '';
     return request<AuditLog[]>(`/audit-logs${qs}`);
   },
-  getAuditExportUrl: (format: 'csv' | 'xlsx' = 'csv') => {
-    const token = getToken() || '';
-    return `${API_BASE}/audit-logs?download=${format}&token=${encodeURIComponent(token)}`;
-  },
+  downloadAuditLogs: (format: 'csv' | 'xlsx' = 'csv') =>
+    downloadBlob(`/audit-logs?download=${format}`, `Audit_Trail_VictoriaHill.${format}`),
 
   // Dashboard
   getDashboard: () => request<DashboardData>('/dashboard'),
@@ -85,6 +127,35 @@ export const api = {
     request<Announcement>('/announcements', { method: 'POST', body: JSON.stringify(payload) }),
   deleteAnnouncement: (id: string) =>
     request<{ status: string }>(`/announcements/${id}`, { method: 'DELETE' }),
+
+  // Activity Reports (Laporan Kegiatan Warga)
+  getActivities: (category = '') => {
+    const qs = category && category !== 'Semua' ? `?category=${encodeURIComponent(category)}` : '';
+    return request<ActivityReport[]>(`/activities${qs}`);
+  },
+  createActivity: (payload: {
+    title: string;
+    category: string;
+    activity_date: string;
+    location: string;
+    summary: string;
+    budget_used: number;
+    image_url?: string;
+  }) => request<ActivityReport>('/activities', { method: 'POST', body: JSON.stringify(payload) }),
+  updateActivity: (
+    id: string,
+    payload: Partial<{
+      title: string;
+      category: string;
+      activity_date: string;
+      location: string;
+      summary: string;
+      budget_used: number;
+      image_url: string;
+    }>
+  ) => request<ActivityReport>(`/activities/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteActivity: (id: string) =>
+    request<{ status: string }>(`/activities/${id}`, { method: 'DELETE' }),
 
   // Directory
   getDirectory: (block = '', q = '') => {
@@ -173,17 +244,73 @@ export const api = {
     return request<CctvCamera[]>(`/cctv${qs}`);
   },
 
-  // Finance
-  getFinance: (type: 'IPL' | 'KAS') => request<FinanceReport[]>(`/finance?type=${type}`),
-  getFinanceDownloadUrl: (id: string, format: 'csv' | 'xlsx' = 'csv') => {
-    const token = getToken() || '';
-    return `${API_BASE}/finance/${id}/download?format=${format}&token=${encodeURIComponent(token)}`;
-  },
-  getTemplateUrl: (kind: 'finance' | 'directory', format: 'csv' | 'xlsx' = 'csv') => {
-    const token = getToken() || '';
-    return `${API_BASE}/templates/${kind}?format=${format}&token=${encodeURIComponent(token)}`;
-  },
-  importFinance: async (file: File, type: 'IPL' | 'KAS', period: string, monthLabel: string) => {
+  // Finance (IPL, KAS_WARGA, KAS_MESJID)
+  getFinance: (type: FinanceFundType | 'ALL' = 'ALL') =>
+    request<FinanceReport[]>(`/finance?type=${type}`),
+  createFinanceReport: (payload: {
+    type: 'IPL' | 'KAS_WARGA' | 'KAS_MESJID';
+    period: string;
+    month_label: string;
+    opening_balance: number;
+    paid_houses?: number;
+    total_houses?: number;
+    notes?: string;
+  }) => request<FinanceReport>('/finance/reports', { method: 'POST', body: JSON.stringify(payload) }),
+  updateFinanceReport: (
+    id: string,
+    payload: Partial<{
+      month_label: string;
+      opening_balance: number;
+      paid_houses: number;
+      total_houses: number;
+      notes: string;
+    }>
+  ) => request<FinanceReport>(`/finance/reports/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
+  deleteFinanceReport: (id: string) =>
+    request<{ status: string }>(`/finance/reports/${id}`, { method: 'DELETE' }),
+  addFinanceItem: (
+    reportId: string,
+    payload: {
+      date: string;
+      description: string;
+      category: string;
+      kind: 'Masuk' | 'Keluar';
+      amount: number;
+    }
+  ) =>
+    request<{ item: FinanceItem; report: FinanceReport }>(`/finance/reports/${reportId}/items`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  updateFinanceItem: (
+    reportId: string,
+    itemId: string,
+    payload: {
+      date: string;
+      description: string;
+      category: string;
+      kind: 'Masuk' | 'Keluar';
+      amount: number;
+    }
+  ) =>
+    request<FinanceReport>(`/finance/reports/${reportId}/items/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    }),
+  deleteFinanceItem: (reportId: string, itemId: string) =>
+    request<FinanceReport>(`/finance/reports/${reportId}/items/${itemId}`, {
+      method: 'DELETE',
+    }),
+  downloadFinance: (id: string, format: 'csv' | 'xlsx' = 'csv') =>
+    downloadBlob(`/finance/${id}/download?format=${format}`, `Laporan_Keuangan.${format}`),
+  downloadTemplate: (kind: 'finance' | 'directory', format: 'csv' | 'xlsx' = 'csv') =>
+    downloadBlob(`/templates/${kind}?format=${format}`, `Template_${kind}.${format}`),
+  importFinance: async (
+    file: File,
+    type: 'IPL' | 'KAS_WARGA' | 'KAS_MESJID',
+    period: string,
+    monthLabel: string
+  ) => {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('type', type);
@@ -202,6 +329,24 @@ export const api = {
       body: formData,
     });
   },
+
+  // Kas Payments (Upload Bukti & Approval)
+  getKasPayments: () => request<KasPaymentSubmission[]>('/kas-payments'),
+  createKasPayment: (payload: {
+    fund_type: 'KAS_WARGA' | 'KAS_MESJID';
+    period?: string;
+    payer_name: string;
+    house_code: string;
+    amount: number;
+    payment_date: string;
+    note: string;
+    proof_url: string;
+  }) => request<KasPaymentSubmission>('/kas-payments', { method: 'POST', body: JSON.stringify(payload) }),
+  reviewKasPayment: (id: string, status: 'Disetujui' | 'Ditolak', admin_note = '') =>
+    request<KasPaymentSubmission>(`/kas-payments/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, admin_note }),
+    }),
 
   // UMKM
   getUmkm: () => request<UmkmItem[]>('/umkm'),

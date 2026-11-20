@@ -1,14 +1,24 @@
 import { useEffect, useState } from 'react';
 import { CheckCircle2, CreditCard, Upload } from 'lucide-react';
 import { api, formatRupiah } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 import type { AccessCardRequest } from '../types';
 import { PageHeader } from '../components/PageHeader';
 
 export function AccessCardPage() {
+  const { user } = useAuth();
   const [requests, setRequests] = useState<AccessCardRequest[]>([]);
   const [fullName, setFullName] = useState('');
-  const [block, setBlock] = useState('');
-  const [houseNo, setHouseNo] = useState('');
+  const [block, setBlock] = useState(() => {
+    const code = user?.house_code || '';
+    const m = code.match(/^([A-Za-z]+)/);
+    return m && code !== 'Admin' ? `Blok ${m[1].toUpperCase()}` : '';
+  });
+  const [houseNo, setHouseNo] = useState(() => {
+    const code = user?.house_code || '';
+    const m = code.match(/^[A-Za-z]+(.+)$/);
+    return m && code !== 'Admin' ? m[1] : '';
+  });
   const [stnkPhotoUrl, setStnkPhotoUrl] = useState('');
   const [fileName, setFileName] = useState('');
   const [uploading, setUploading] = useState(false);

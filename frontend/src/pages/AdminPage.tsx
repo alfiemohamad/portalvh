@@ -5,6 +5,7 @@ import {
   Bell,
   Box,
   Calendar,
+  CalendarDays,
   CheckCircle2,
   CreditCard,
   Download,
@@ -14,6 +15,7 @@ import {
   ShieldAlert,
   Trash2,
   Upload,
+  Wallet,
   Wrench,
 } from 'lucide-react';
 import { api } from '../api/client';
@@ -28,9 +30,13 @@ import type {
   Ticket,
 } from '../types';
 import { PageHeader } from '../components/PageHeader';
+import { AdminFinancePanel } from '../components/AdminFinancePanel';
+import { AdminActivitiesPanel } from '../components/AdminActivitiesPanel';
 
 type AdminTab =
   | 'overview'
+  | 'finance'
+  | 'activities'
   | 'announcements'
   | 'tickets'
   | 'cards'
@@ -55,9 +61,6 @@ export function AdminPage() {
   const [auditAction, setAuditAction] = useState('ALL');
 
   const [newAnn, setNewAnn] = useState({ title: '', content: '', category: 'Umum' });
-  const [finType, setFinType] = useState<'IPL' | 'KAS'>('IPL');
-  const [finPeriod, setFinPeriod] = useState('2026-12');
-  const [finLabel, setFinLabel] = useState('Desember 2026');
   const [importMsg, setImportMsg] = useState('');
   const [importErr, setImportErr] = useState('');
   const [importing, setImporting] = useState(false);
@@ -100,12 +103,14 @@ export function AdminPage() {
 
   const menuItems: { key: AdminTab; label: string; icon: React.ElementType; badge?: number }[] = [
     { key: 'overview', label: 'Ringkasan & Panic', icon: LayoutDashboard, badge: activePanics },
+    { key: 'finance', label: 'Keuangan & Cashflow', icon: Wallet },
+    { key: 'activities', label: 'Laporan Kegiatan', icon: CalendarDays },
     { key: 'announcements', label: 'Pengumuman', icon: Bell, badge: announcements.length },
     { key: 'tickets', label: 'Tiket Laporan', icon: Wrench, badge: openTickets },
     { key: 'cards', label: 'Kartu Akses', icon: CreditCard, badge: pendingCards },
     { key: 'bookings', label: 'Booking Fasilitas', icon: Calendar, badge: pendingBookings },
     { key: 'loans', label: 'Pinjam Barang', icon: Box, badge: loans.length },
-    { key: 'import', label: 'Import CSV / Excel', icon: FileSpreadsheet },
+    { key: 'import', label: 'Import Direktori', icon: FileSpreadsheet },
     { key: 'audit', label: 'Audit Trail', icon: Activity, badge: auditLogs.length },
   ];
 
@@ -208,6 +213,12 @@ export function AdminPage() {
           </section>
         </div>
       )}
+
+      {/* TAB: FINANCE & CASHFLOW */}
+      {tab === 'finance' && <AdminFinancePanel />}
+
+      {/* TAB: ACTIVITY REPORTS */}
+      {tab === 'activities' && <AdminActivitiesPanel />}
 
       {/* TAB: ANNOUNCEMENTS */}
       {tab === 'announcements' && (
@@ -430,12 +441,12 @@ export function AdminPage() {
         </section>
       )}
 
-      {/* TAB: IMPORT CSV & EXCEL */}
+      {/* TAB: IMPORT DIREKTORI */}
       {tab === 'import' && (
         <section className="rounded-3xl bg-white border border-[#dce5df] p-6 shadow-xs space-y-5">
           <div className="flex items-center gap-2 font-bold text-[#17251f]">
             <FileSpreadsheet className="w-5 h-5 text-[#176b4b]" />
-            Upload / Import Data (CSV & Excel .xlsx)
+            Import Data Warga / Direktori (CSV & Excel .xlsx)
           </div>
 
           {importMsg && (
@@ -449,48 +460,33 @@ export function AdminPage() {
             </div>
           )}
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-            <div className="rounded-2xl bg-[#f7f9f7] border border-[#edf1ee] p-5 space-y-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <h3 className="font-bold text-sm text-[#17251f]">
-                  Import Laporan Keuangan (IPL / KAS)
-                </h3>
-                <div className="flex gap-2 text-xs">
-                  <a href={api.getTemplateUrl('finance', 'csv')} download className="text-[#176b4b] font-semibold underline">
-                    Template CSV
-                  </a>
-                  <a href={api.getTemplateUrl('finance', 'xlsx')} download className="text-[#1b4532] font-semibold underline">
-                    Template Excel
-                  </a>
-                </div>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <select
-                  value={finType}
-                  onChange={(e) => setFinType(e.target.value as 'IPL' | 'KAS')}
-                  className="rounded-xl border border-[#dce5df] bg-white px-3 py-2 text-xs font-semibold"
+          <div className="rounded-2xl bg-[#f7f9f7] border border-[#edf1ee] p-5 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="font-bold text-sm text-[#17251f]">Import Data Warga (Direktori)</h3>
+              <div className="flex gap-3 text-xs">
+                <button
+                  type="button"
+                  onClick={() => api.downloadTemplate('directory', 'csv')}
+                  className="text-[#176b4b] font-semibold underline cursor-pointer"
                 >
-                  <option value="IPL">IPL</option>
-                  <option value="KAS">KAS</option>
-                </select>
-                <input
-                  type="text"
-                  value={finPeriod}
-                  onChange={(e) => setFinPeriod(e.target.value)}
-                  placeholder="2026-12"
-                  className="rounded-xl border border-[#dce5df] bg-white px-3 py-2 text-xs"
-                />
-                <input
-                  type="text"
-                  value={finLabel}
-                  onChange={(e) => setFinLabel(e.target.value)}
-                  placeholder="Desember 2026"
-                  className="rounded-xl border border-[#dce5df] bg-white px-3 py-2 text-xs"
-                />
+                  Template CSV
+                </button>
+                <button
+                  type="button"
+                  onClick={() => api.downloadTemplate('directory', 'xlsx')}
+                  className="text-[#1b4532] font-semibold underline cursor-pointer"
+                >
+                  Template Excel
+                </button>
               </div>
-              <label className="inline-flex items-center gap-2 rounded-full bg-[#1b4532] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#133325] transition cursor-pointer">
+            </div>
+            <p className="text-xs text-[#506457]">
+              Unggah daftar blok, kode rumah, status hunian, dan kepala keluarga dalam format CSV atau Excel (.xlsx). Untuk impor laporan keuangan (IPL/KAS), gunakan tab <strong>Keuangan & Cashflow</strong>.
+            </p>
+            <div>
+              <label className="inline-flex items-center gap-2 rounded-full bg-[#ee4129] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#d8351e] transition cursor-pointer">
                 <Upload className="w-4 h-4" />
-                <span>{importing ? 'Mengimpor...' : 'Upload File CSV / Excel (.xlsx)'}</span>
+                <span>{importing ? 'Mengimpor...' : 'Upload Data Warga CSV / Excel'}</span>
                 <input
                   type="file"
                   accept=".csv,.xlsx"
@@ -502,11 +498,11 @@ export function AdminPage() {
                     setImportMsg('');
                     setImportErr('');
                     try {
-                      const res = await api.importFinance(file, finType, finPeriod, finLabel);
+                      const res = await api.importDirectory(file);
                       setImportMsg(res.message);
                       loadAll();
                     } catch (err) {
-                      setImportErr(err instanceof Error ? err.message : 'Gagal impor laporan');
+                      setImportErr(err instanceof Error ? err.message : 'Gagal impor data warga');
                     } finally {
                       setImporting(false);
                       e.target.value = '';
@@ -514,53 +510,6 @@ export function AdminPage() {
                   }}
                 />
               </label>
-            </div>
-
-            <div className="rounded-2xl bg-[#f7f9f7] border border-[#edf1ee] p-5 space-y-3 flex flex-col justify-between">
-              <div>
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="font-bold text-sm text-[#17251f]">Import Data Warga (Direktori)</h3>
-                  <div className="flex gap-2 text-xs">
-                    <a href={api.getTemplateUrl('directory', 'csv')} download className="text-[#176b4b] font-semibold underline">
-                      Template CSV
-                    </a>
-                    <a href={api.getTemplateUrl('directory', 'xlsx')} download className="text-[#1b4532] font-semibold underline">
-                      Template Excel
-                    </a>
-                  </div>
-                </div>
-                <p className="text-xs text-[#506457] mt-1.5">
-                  Unggah daftar blok, kode rumah, status hunian, dan kepala keluarga dalam format CSV atau Excel (.xlsx).
-                </p>
-              </div>
-              <div>
-                <label className="inline-flex items-center gap-2 rounded-full bg-[#ee4129] px-5 py-2.5 text-xs font-bold text-white hover:bg-[#d8351e] transition cursor-pointer">
-                  <Upload className="w-4 h-4" />
-                  <span>{importing ? 'Mengimpor...' : 'Upload Data Warga CSV / Excel'}</span>
-                  <input
-                    type="file"
-                    accept=".csv,.xlsx"
-                    className="hidden"
-                    onChange={async (e) => {
-                      const file = e.target.files?.[0];
-                      if (!file) return;
-                      setImporting(true);
-                      setImportMsg('');
-                      setImportErr('');
-                      try {
-                        const res = await api.importDirectory(file);
-                        setImportMsg(res.message);
-                        loadAll();
-                      } catch (err) {
-                        setImportErr(err instanceof Error ? err.message : 'Gagal impor data warga');
-                      } finally {
-                        setImporting(false);
-                        e.target.value = '';
-                      }
-                    }}
-                  />
-                </label>
-              </div>
             </div>
           </div>
         </section>
@@ -575,20 +524,20 @@ export function AdminPage() {
               Audit Trail Aktivitas & Unduhan Data
             </div>
             <div className="flex flex-wrap gap-2">
-              <a
-                href={api.getAuditExportUrl('csv')}
-                download
-                className="inline-flex items-center gap-1.5 rounded-full border border-[#dce5df] bg-[#f7f9f7] px-4 py-2 text-xs font-bold text-[#17251f] hover:bg-[#eef4ef]"
+              <button
+                type="button"
+                onClick={() => api.downloadAuditLogs('csv')}
+                className="inline-flex items-center gap-1.5 rounded-full border border-[#dce5df] bg-[#f7f9f7] px-4 py-2 text-xs font-bold text-[#17251f] hover:bg-[#eef4ef] cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" /> Export CSV
-              </a>
-              <a
-                href={api.getAuditExportUrl('xlsx')}
-                download
-                className="inline-flex items-center gap-1.5 rounded-full bg-[#1b4532] px-4 py-2 text-xs font-bold text-white hover:bg-[#133325]"
+              </button>
+              <button
+                type="button"
+                onClick={() => api.downloadAuditLogs('xlsx')}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[#1b4532] px-4 py-2 text-xs font-bold text-white hover:bg-[#133325] cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" /> Export Excel
-              </a>
+              </button>
             </div>
           </div>
 

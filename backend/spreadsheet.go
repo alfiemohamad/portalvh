@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/xuri/excelize/v2"
 )
@@ -73,22 +74,22 @@ func (s *Server) handleImportFinance(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportType := strings.ToUpper(strings.TrimSpace(r.FormValue("type")))
-	if reportType != "IPL" && reportType != "KAS" {
-		reportType = "IPL"
+	reportType := normalizeFundType(r.FormValue("type"))
+	if reportType == "" {
+		writeError(w, http.StatusBadRequest, "Jenis laporan harus IPL, KAS_WARGA, atau KAS_MESJID")
+		return
 	}
 	period := strings.TrimSpace(r.FormValue("period"))
 	if period == "" {
-		period = "2026-11"
+		period = time.Now().Format("2006-01")
 	}
 	monthLabel := strings.TrimSpace(r.FormValue("month_label"))
 	if monthLabel == "" {
 		monthLabel = period
 	}
+	openingBalance := parseAmountInt(r.FormValue("opening_balance"))
 
 	items := []FinanceItem{}
-	totalIncome := 0
-	totalSpend := 0
 
 	for idx, row := range rows {
 		if idx == 0 {
@@ -112,11 +113,9 @@ func (s *Server) handleImportFinance(w http.ResponseWriter, r *http.Request) {
 		kind := "Masuk"
 		if strings.Contains(kindRaw, "keluar") || strings.Contains(kindRaw, "out") || strings.Contains(kindRaw, "spend") {
 			kind = "Keluar"
-			totalSpend += amount
-		} else {
-			totalIncome += amount
 		}
 		items = append(items, FinanceItem{
+			ID:          generateID("tx"),
 			Date:        date,
 			Description: desc,
 			Category:    cat,
@@ -132,20 +131,26 @@ func (s *Server) handleImportFinance(w http.ResponseWriter, r *http.Request) {
 
 	reportID := fmt.Sprintf("rep-%s-%s", strings.ToLower(reportType), period)
 	newReport := FinanceReport{
-		ID:          reportID,
-		Type:        reportType,
-		Period:      period,
-		MonthLabel:  monthLabel,
-		TotalIncome: totalIncome,
-		TotalSpend:  totalSpend,
-		Balance:     totalIncome - totalSpend,
-		Items:       items,
+		ID:             reportID,
+		Type:           reportType,
+		Period:         period,
+		MonthLabel:     monthLabel,
+		OpeningBalance: openingBalance,
+		Items:          items,
 	}
+	recalculateFinanceReport(&newReport)
 
 	s.store.mu.Lock()
 	replaced := false
 	for i := range s.store.db.FinanceReports {
 		if s.store.db.FinanceReports[i].ID == reportID {
+			if newReport.OpeningBalance == 0 {
+				newReport.OpeningBalance = s.store.db.FinanceReports[i].OpeningBalance
+				recalculateFinanceReport(&newReport)
+			}
+			newReport.PaidHouses = s.store.db.FinanceReports[i].PaidHouses
+			newReport.TotalHouses = s.store.db.FinanceReports[i].TotalHouses
+			newReport.Notes = s.store.db.FinanceReports[i].Notes
 			s.store.db.FinanceReports[i] = newReport
 			replaced = true
 			break
@@ -154,7 +159,12 @@ func (s *Server) handleImportFinance(w http.ResponseWriter, r *http.Request) {
 	if !replaced {
 		s.store.db.FinanceReports = append([]FinanceReport{newReport}, s.store.db.FinanceReports...)
 	}
-	_ = s.store.saveLocked()
+	sortFinanceReports(s.store.db.FinanceReports)
+	if err := s.store.saveLocked(); err != nil {
+		s.store.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, "Gagal menyimpan laporan keuangan")
+		return
+	}
 	s.store.mu.Unlock()
 
 	s.recordAudit(r, "IMPORT_FINANCE", reportType+" "+monthLabel, fmt.Sprintf("Impor %d transaksi dari %s", len(items), header.Filename))

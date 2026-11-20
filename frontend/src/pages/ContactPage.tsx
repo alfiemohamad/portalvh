@@ -2,10 +2,26 @@ import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ClipboardList, MessageCircle, Phone, UserCheck } from 'lucide-react';
 import { api } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 import type { PengurusContact, Ticket } from '../types';
 import { PageHeader } from '../components/PageHeader';
 
+function maskDisplayName(name: string): string {
+  return name
+    .trim()
+    .split(/\s+/)
+    .map((word) => (word.length <= 1 ? '*' : word[0] + '*'.repeat(word.length - 1)))
+    .join(' ');
+}
+
+function maskDisplayPhone(phone: string): string {
+  const trimmed = phone.trim();
+  if (trimmed.length < 7) return trimmed;
+  return `${trimmed.slice(0, 4)}-****-${trimmed.slice(-4)}`;
+}
+
 export function ContactPage() {
+  const { isAdmin } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab = searchParams.get('tab') || 'kontak';
   const [contacts, setContacts] = useState<PengurusContact[]>([]);
@@ -52,36 +68,42 @@ export function ContactPage() {
 
       {tab !== 'status' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-          {contacts.map((c) => (
-            <div
-              key={c.id}
-              className="rounded-3xl bg-white border border-[#dce5df] p-6 shadow-xs flex flex-col justify-between gap-4"
-            >
-              <div className="flex items-start gap-4">
-                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#e8f0eb] text-[#176b4b]">
-                  <UserCheck className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-base font-bold text-[#17251f]">{c.name}</h3>
-                  <p className="text-sm font-medium text-[#176b4b]">{c.position}</p>
-                  <p className="text-xs text-[#506457] mt-1">
-                    {c.house} · {c.phone}
-                  </p>
-                </div>
-              </div>
-              <a
-                href={`https://wa.me/${c.whatsapp}?text=${encodeURIComponent(
-                  `Halo ${c.name}, saya warga Victoria Hill ingin berkonsultasi.`
-                )}`}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center justify-center gap-2 rounded-full bg-[#1b4532] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#133325] transition"
+          {contacts.map((c) => {
+            const isPosSecurity = c.house.toLowerCase().includes('gerbang');
+            const displayName = !isAdmin && !isPosSecurity ? maskDisplayName(c.name) : c.name;
+            const displayPhone = !isAdmin ? maskDisplayPhone(c.phone) : c.phone;
+
+            return (
+              <div
+                key={c.id}
+                className="rounded-3xl bg-white border border-[#dce5df] p-6 shadow-xs flex flex-col justify-between gap-4"
               >
-                <MessageCircle className="w-4 h-4" />
-                Hubungi via WhatsApp
-              </a>
-            </div>
-          ))}
+                <div className="flex items-start gap-4">
+                  <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-[#e8f0eb] text-[#176b4b]">
+                    <UserCheck className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-[#17251f]">{displayName}</h3>
+                    <p className="text-sm font-medium text-[#176b4b]">{c.position}</p>
+                    <p className="text-xs text-[#506457] mt-1">
+                      {c.house} · {displayPhone}
+                    </p>
+                  </div>
+                </div>
+                <a
+                  href={`https://wa.me/${c.whatsapp}?text=${encodeURIComponent(
+                    `Halo ${c.position}, saya warga Victoria Hill ingin berkonsultasi.`
+                  )}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center justify-center gap-2 rounded-full bg-[#1b4532] px-5 py-2.5 text-sm font-bold text-white hover:bg-[#133325] transition"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  Hubungi via WhatsApp
+                </a>
+              </div>
+            );
+          })}
         </div>
       ) : (
         <div className="space-y-4">

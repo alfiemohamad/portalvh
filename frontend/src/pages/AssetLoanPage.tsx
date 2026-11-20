@@ -1,16 +1,18 @@
 import { useEffect, useState } from 'react';
 import { Box, CheckCircle2, X } from 'lucide-react';
 import { api } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 import type { AssetLoan, BorrowableAsset } from '../types';
 import { PageHeader } from '../components/PageHeader';
 
 export function AssetLoanPage() {
+  const { user } = useAuth();
   const [assets, setAssets] = useState<BorrowableAsset[]>([]);
   const [loans, setLoans] = useState<AssetLoan[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<BorrowableAsset | null>(null);
   const [form, setForm] = useState({
-    borrower_name: '',
-    house_code: '',
+    borrower_name: user?.name || '',
+    house_code: user?.house_code && user.house_code !== 'Admin' ? user.house_code : '',
     phone: '',
     quantity: 1,
     borrow_date: new Date(Date.now() + 86400000).toISOString().split('T')[0],

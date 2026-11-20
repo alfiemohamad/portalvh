@@ -48,7 +48,7 @@ export function InfoPage() {
 
   const tabs = [
     { key: 'pengumuman', label: 'Pengumuman', icon: Bell },
-    { key: 'galeri', label: 'Galeri Aktifitas', icon: ImageIcon },
+    { key: 'galeri', label: 'Laporan Kegiatan', icon: ImageIcon },
     { key: 'umkm', label: 'UMKM Warga', icon: Store },
     { key: 'panduan', label: 'Panduan Layanan', icon: BookOpen },
   ];
@@ -106,23 +106,48 @@ export function InfoPage() {
         </div>
       )}
 
-      {/* Galeri */}
+      {/* Laporan Kegiatan Warga */}
       {section === 'galeri' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
-          {(data?.gallery ?? []).map((photo) => (
-            <div
-              key={photo.id}
-              className="overflow-hidden rounded-3xl bg-white border border-[#dce5df] shadow-xs"
-            >
-              <div className="aspect-[16/10] bg-[#eef4ef]">
-                <img src={photo.image_url} alt={photo.title} className="h-full w-full object-cover" />
-              </div>
-              <div className="p-4">
-                <span className="text-xs font-bold text-[#176b4b]">{photo.category} · {photo.date}</span>
-                <h3 className="mt-1 text-base font-bold text-[#17251f]">{photo.title}</h3>
-              </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
+          {(data?.activities ?? []).length === 0 ? (
+            <div className="col-span-full rounded-3xl bg-white border border-[#dce5df] p-8 text-center text-sm text-[#506457]">
+              Belum ada laporan kegiatan warga yang dipublikasikan.
             </div>
-          ))}
+          ) : (
+            (data?.activities ?? []).map((act) => (
+              <article
+                key={act.id}
+                className="flex flex-col overflow-hidden rounded-3xl bg-white border border-[#dce5df] shadow-xs"
+              >
+                <div className="aspect-[16/10] bg-[#eef4ef]">
+                  <img
+                    src={act.image_url || '/images/gallery-1.png'}
+                    alt={act.title}
+                    className="h-full w-full object-cover"
+                  />
+                </div>
+                <div className="p-5 flex-1 flex flex-col">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <span className="rounded-full bg-[#dff0e4] px-2.5 py-0.5 font-bold text-[#176b4b]">
+                      {act.category}
+                    </span>
+                    <span className="text-[#5c6b63] font-medium">{act.activity_date}</span>
+                  </div>
+                  <h3 className="mt-2 text-base font-bold text-[#17251f]">{act.title}</h3>
+                  {act.location && (
+                    <p className="mt-1 text-xs font-medium text-[#176b4b]">Lokasi: {act.location}</p>
+                  )}
+                  <p className="mt-2 text-sm text-[#506457] leading-relaxed flex-1">{act.summary}</p>
+                  {act.budget_used > 0 && (
+                    <div className="mt-3 pt-3 border-t border-[#edf1ee] flex items-center justify-between text-xs">
+                      <span className="text-[#506457]">Realisasi Anggaran</span>
+                      <span className="font-bold text-[#1b4532]">{formatRupiah(act.budget_used)}</span>
+                    </div>
+                  )}
+                </div>
+              </article>
+            ))
+          )}
         </div>
       )}
 

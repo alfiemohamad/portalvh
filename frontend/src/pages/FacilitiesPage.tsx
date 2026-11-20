@@ -11,12 +11,15 @@ import {
   X,
 } from 'lucide-react';
 import { api } from '../api/client';
+import { useAuth } from '../context/AuthContext';
 import type { Facility, FacilityBooking } from '../types';
 import { PageHeader } from '../components/PageHeader';
 
 type TabKey = 'ringkasan' | 'pemanfaatan' | 'tiket';
 
 export function FacilitiesPage() {
+  const { user } = useAuth();
+  const defaultHouseCode = user?.house_code && user.house_code !== 'Admin' ? user.house_code : '';
   const [searchParams, setSearchParams] = useSearchParams();
   const initialTab = (searchParams.get('tab') as TabKey) || 'ringkasan';
   const [activeTab, setActiveTab] = useState<TabKey>(
@@ -39,8 +42,8 @@ export function FacilitiesPage() {
   const [bookingFacility, setBookingFacility] = useState<Facility | null>(null);
   const [scheduleFacility, setScheduleFacility] = useState<Facility | null>(null);
   const [bookForm, setBookForm] = useState({
-    resident_name: '',
-    house_code: '',
+    resident_name: user?.name || '',
+    house_code: defaultHouseCode,
     phone: '',
     date: new Date(Date.now() + 86400000).toISOString().split('T')[0],
     time_slot: '08:00 - 10:00',
@@ -53,8 +56,8 @@ export function FacilitiesPage() {
   const [ticketForm, setTicketForm] = useState({
     category: '',
     location: '',
-    reporter_name: '',
-    house_code: '',
+    reporter_name: user?.name || '',
+    house_code: defaultHouseCode,
     description: '',
     photo_url: '',
   });

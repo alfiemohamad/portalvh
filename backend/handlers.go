@@ -18,26 +18,37 @@ import (
 )
 
 type SessionUser struct {
-	Username  string `json:"username"`
-	Name      string `json:"name"`
-	Role      string `json:"role"` // "Warga" | "Pengurus"
-	HouseCode string `json:"house_code"`
+	Username    string   `json:"username"`
+	Name        string   `json:"name"`
+	Role        string   `json:"role"` // MVP: "Warga" | "Pengurus" (siap diperluas: "Bendahara" | "Keamanan" | "Admin")
+	HouseCode   string   `json:"house_code"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 type Server struct {
 	store     *Store
 	uploadDir string
 	tokensMu  sync.RWMutex
-	tokens    map[string]SessionUser
+	tokens    map[string]UserSession // key: SHA-256 hash dari bearer token
 }
 
 func NewServer(store *Store, uploadDir string) *Server {
 	_ = os.MkdirAll(uploadDir, 0o755)
-	return &Server{
+	srv := &Server{
 		store:     store,
 		uploadDir: uploadDir,
-		tokens:    make(map[string]SessionUser),
+		tokens:    make(map[string]UserSession),
 	}
+	// Muat sesi aktif yang tersimpan di database agar login bertahan saat server restart
+	now := time.Now()
+	store.mu.RLock()
+	for _, sess := range store.db.Sessions {
+		if sess.ExpiresAt.After(now) {
+			srv.tokens[sess.TokenHash] = sess
+		}
+	}
+	store.mu.RUnlock()
+	return srv
 }
 
 func generateID(prefix string) string {
@@ -56,31 +67,109 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-func (s *Server) currentUser(r *http.Request) (SessionUser, bool) {
-	token := ""
+func permissionsForRole(role string) []string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "pengurus", "admin":
+		return []string{"admin", "bendahara", "keamanan", "warga"}
+	case "bendahara":
+		return []string{"bendahara", "warga"}
+	case "keamanan":
+		return []string{"keamanan", "warga"}
+	default:
+		return []string{"warga"}
+	}
+}
+
+func (s *Server) extractBearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(auth, "Bearer ") {
-		token = strings.TrimPrefix(auth, "Bearer ")
-	} else if qToken := strings.TrimSpace(r.URL.Query().Get("token")); qToken != "" {
-		token = qToken
+		return strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
 	}
+	return ""
+}
+
+func (s *Server) currentUser(r *http.Request) (SessionUser, bool) {
+	token := s.extractBearerToken(r)
 	if token == "" {
 		return SessionUser{}, false
 	}
+	tokenHash := HashToken(token)
 	s.tokensMu.RLock()
-	defer s.tokensMu.RUnlock()
-	u, ok := s.tokens[token]
-	return u, ok
+	sess, ok := s.tokens[tokenHash]
+	s.tokensMu.RUnlock()
+	if !ok {
+		return SessionUser{}, false
+	}
+	if time.Now().After(sess.ExpiresAt) {
+		s.tokensMu.Lock()
+		delete(s.tokens, tokenHash)
+		s.tokensMu.Unlock()
+		_ = s.store.DeleteSession(tokenHash)
+		return SessionUser{}, false
+	}
+	return SessionUser{
+		Username:    sess.Username,
+		Name:        sess.Name,
+		Role:        sess.Role,
+		HouseCode:   sess.HouseCode,
+		Permissions: permissionsForRole(sess.Role),
+	}, true
+}
+
+func (s *Server) hasAnyRole(u SessionUser, allowed ...string) bool {
+	// Pada MVP, Pengurus / Admin memiliki akses ke seluruh role pengurus (admin, bendahara, keamanan).
+	// Jika nanti peran dipisahkan di tabel users, pengecekan ini langsung berlaku otomatis.
+	perms := permissionsForRole(u.Role)
+	for _, want := range allowed {
+		w := strings.ToLower(strings.TrimSpace(want))
+		for _, p := range perms {
+			if p == w {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Server) isAdmin(r *http.Request) bool {
 	u, ok := s.currentUser(r)
-	return ok && u.Role == "Pengurus"
+	return ok && s.hasAnyRole(u, "admin")
+}
+
+func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if _, ok := s.currentUser(r); !ok {
+			writeError(w, http.StatusUnauthorized, "Sesi tidak valid atau telah berakhir. Silakan login kembali.")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) requireRole(allowed ...string) func(http.HandlerFunc) http.HandlerFunc {
+	return func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			u, ok := s.currentUser(r)
+			if !ok {
+				writeError(w, http.StatusUnauthorized, "Silakan login terlebih dahulu.")
+				return
+			}
+			if !s.hasAnyRole(u, allowed...) {
+				writeError(w, http.StatusForbidden, "Anda tidak memiliki izin untuk mengakses fitur ini.")
+				return
+			}
+			next(w, r)
+		}
+	}
 }
 
 func clientIP(r *http.Request) string {
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		return strings.TrimSpace(strings.Split(fwd, ",")[0])
+	// Gunakan RemoteAddr secara default agar header X-Forwarded-For tidak mudah di-spoof.
+	// Jika aplikasi dijalankan di belakang trusted reverse proxy, set TRUST_PROXY=true di .env.
+	if strings.EqualFold(os.Getenv("TRUST_PROXY"), "true") {
+		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+			return strings.TrimSpace(strings.Split(fwd, ",")[0])
+		}
 	}
 	return r.RemoteAddr
 }
@@ -107,13 +196,7 @@ func (s *Server) recordAudit(r *http.Request, action, target, details string) {
 		IPAddress: clientIP(r),
 		CreatedAt: time.Now(),
 	}
-	s.store.mu.Lock()
-	s.store.db.AuditLogs = append([]AuditLog{entry}, s.store.db.AuditLogs...)
-	if len(s.store.db.AuditLogs) > 500 {
-		s.store.db.AuditLogs = s.store.db.AuditLogs[:500]
-	}
-	_ = s.store.saveLocked()
-	s.store.mu.Unlock()
+	_ = s.store.AppendAuditLog(entry)
 }
 
 func (s *Server) recordAuditUser(u SessionUser, r *http.Request, action, target, details string) {
@@ -132,23 +215,34 @@ func (s *Server) recordAuditUser(u SessionUser, r *http.Request, action, target,
 		IPAddress: clientIP(r),
 		CreatedAt: time.Now(),
 	}
-	s.store.mu.Lock()
-	s.store.db.AuditLogs = append([]AuditLog{entry}, s.store.db.AuditLogs...)
-	if len(s.store.db.AuditLogs) > 500 {
-		s.store.db.AuditLogs = s.store.db.AuditLogs[:500]
-	}
-	_ = s.store.saveLocked()
-	s.store.mu.Unlock()
+	_ = s.store.AppendAuditLog(entry)
 }
 
 func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.isAdmin(r) {
-			writeError(w, http.StatusUnauthorized, "Akses khusus pengurus. Silakan login terlebih dahulu.")
-			return
-		}
-		next(w, r)
+	return s.requireRole("admin")(next)
+}
+
+// GET /api/auth/me -> verifikasi sesi aktif
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	u, ok := s.currentUser(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "Sesi tidak valid")
+		return
 	}
+	writeJSON(w, http.StatusOK, map[string]any{"user": u})
+}
+
+// POST /api/auth/logout -> cabut token sesi aktif
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	token := s.extractBearerToken(r)
+	if token != "" {
+		tokenHash := HashToken(token)
+		s.tokensMu.Lock()
+		delete(s.tokens, tokenHash)
+		s.tokensMu.Unlock()
+		_ = s.store.DeleteSession(tokenHash)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "logged_out"})
 }
 
 // GET /api/auth/houses -> daftar kode blok & rumah untuk dropdown login warga
@@ -191,16 +285,6 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if mode == "resident" {
-		resPass := os.Getenv("RESIDENT_PASSWORD")
-		if resPass == "" {
-			writeError(w, http.StatusServiceUnavailable, "Password warga belum dikonfigurasi di environment (.env)")
-			return
-		}
-		if body.Password != resPass {
-			writeError(w, http.StatusUnauthorized, "Password warga salah")
-			return
-		}
-
 		blk := strings.ToUpper(strings.TrimSpace(body.Block))
 		blk = strings.TrimPrefix(blk, "BLOK ")
 		blk = strings.TrimSpace(blk)
@@ -222,13 +306,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Lookup resident name (decrypt & mask before exposing to session)
+		// Lookup resident house (cek apakah rumah memiliki password_hash pribadi, jika kosong gunakan RESIDENT_PASSWORD bersama MVP)
 		displayName := "Warga " + code
+		housePasswordHash := ""
 		s.store.mu.RLock()
 		for _, h := range s.store.db.Houses {
 			altCode := blk + no
 			if strings.EqualFold(h.Code, code) || (altCode != "" && strings.EqualFold(h.Code, altCode)) {
 				code = h.Code
+				housePasswordHash = h.PasswordHash
 				if h.HeadOfHome != "" {
 					plainName := DecryptText(h.HeadOfHome)
 					displayName = MaskName(plainName) + " (" + h.Code + ")"
@@ -238,19 +324,49 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 		s.store.mu.RUnlock()
 
-		b := make([]byte, 16)
+		if housePasswordHash != "" {
+			if !CheckPassword(housePasswordHash, body.Password) {
+				writeError(w, http.StatusUnauthorized, "Password warga salah")
+				return
+			}
+		} else {
+			resPass := os.Getenv("RESIDENT_PASSWORD")
+			if resPass == "" {
+				writeError(w, http.StatusServiceUnavailable, "Password warga belum dikonfigurasi di environment (.env)")
+				return
+			}
+			if !ConstantTimeEqual(body.Password, resPass) {
+				writeError(w, http.StatusUnauthorized, "Password warga salah")
+				return
+			}
+		}
+
+		b := make([]byte, 32)
 		_, _ = rand.Read(b)
 		token := hex.EncodeToString(b)
-		user := SessionUser{
+		tokenHash := HashToken(token)
+		now := time.Now()
+		sess := UserSession{
+			TokenHash: tokenHash,
 			Username:  code,
 			Name:      displayName,
 			Role:      "Warga",
 			HouseCode: code,
+			ExpiresAt: now.Add(7 * 24 * time.Hour),
+			CreatedAt: now,
 		}
 		s.tokensMu.Lock()
-		s.tokens[token] = user
+		s.tokens[tokenHash] = sess
 		s.tokensMu.Unlock()
+		_ = s.store.SaveSession(sess)
 
+		user := SessionUser{
+			Username:    sess.Username,
+			Name:        sess.Name,
+			Role:        sess.Role,
+			HouseCode:   sess.HouseCode,
+			Permissions: permissionsForRole(sess.Role),
+		}
 		s.recordAuditUser(user, r, "LOGIN_WARGA", "Portal Warga", "Login warga "+code)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"token": token,
@@ -259,27 +375,94 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	u := strings.TrimSpace(strings.ToLower(body.Username))
+
+	// Cek akun multi-role di tabel users terlebih dahulu (siap untuk pemisahan bendahara/keamanan di masa depan)
+	var matchedAccount *UserAccount
+	s.store.mu.RLock()
+	for i := range s.store.db.Users {
+		acc := s.store.db.Users[i]
+		if acc.IsActive && strings.EqualFold(acc.Username, u) {
+			accCopy := acc
+			matchedAccount = &accCopy
+			break
+		}
+	}
+	s.store.mu.RUnlock()
+
+	if matchedAccount != nil {
+		if !CheckPassword(matchedAccount.PasswordHash, body.Password) {
+			writeError(w, http.StatusUnauthorized, "Username atau password pengurus salah")
+			return
+		}
+		b := make([]byte, 32)
+		_, _ = rand.Read(b)
+		token := hex.EncodeToString(b)
+		tokenHash := HashToken(token)
+		now := time.Now()
+		sess := UserSession{
+			TokenHash: tokenHash,
+			Username:  matchedAccount.Username,
+			Name:      matchedAccount.FullName,
+			Role:      matchedAccount.Role,
+			HouseCode: "Admin",
+			ExpiresAt: now.Add(7 * 24 * time.Hour),
+			CreatedAt: now,
+		}
+		s.tokensMu.Lock()
+		s.tokens[tokenHash] = sess
+		s.tokensMu.Unlock()
+		_ = s.store.SaveSession(sess)
+
+		user := SessionUser{
+			Username:    sess.Username,
+			Name:        sess.Name,
+			Role:        sess.Role,
+			HouseCode:   sess.HouseCode,
+			Permissions: permissionsForRole(sess.Role),
+		}
+		s.recordAuditUser(user, r, "LOGIN_PENGURUS", "Dashboard Pengurus", "Login sebagai "+sess.Role+" ("+u+")")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token": token,
+			"user":  user,
+		})
+		return
+	}
+
+	// Fallback MVP: akun pengurus dari environment (.env)
 	adminUser := strings.TrimSpace(strings.ToLower(os.Getenv("ADMIN_USERNAME")))
 	adminPass := os.Getenv("ADMIN_PASSWORD")
 	if adminUser == "" || adminPass == "" {
 		writeError(w, http.StatusServiceUnavailable, "Kredensial pengurus belum dikonfigurasi di environment (.env)")
 		return
 	}
-	u := strings.TrimSpace(strings.ToLower(body.Username))
-	if u == adminUser && body.Password == adminPass {
-		b := make([]byte, 16)
+	if ConstantTimeEqual(u, adminUser) && ConstantTimeEqual(body.Password, adminPass) {
+		b := make([]byte, 32)
 		_, _ = rand.Read(b)
 		token := hex.EncodeToString(b)
-		user := SessionUser{
+		tokenHash := HashToken(token)
+		now := time.Now()
+		sess := UserSession{
+			TokenHash: tokenHash,
 			Username:  u,
 			Name:      "Pengurus Victoria Hill",
 			Role:      "Pengurus",
 			HouseCode: "Admin",
+			ExpiresAt: now.Add(7 * 24 * time.Hour),
+			CreatedAt: now,
 		}
 		s.tokensMu.Lock()
-		s.tokens[token] = user
+		s.tokens[tokenHash] = sess
 		s.tokensMu.Unlock()
+		_ = s.store.SaveSession(sess)
 
+		user := SessionUser{
+			Username:    sess.Username,
+			Name:        sess.Name,
+			Role:        sess.Role,
+			HouseCode:   sess.HouseCode,
+			Permissions: permissionsForRole(sess.Role),
+		}
 		s.recordAuditUser(user, r, "LOGIN_PENGURUS", "Dashboard Pengurus", "Login sebagai pengurus ("+u+")")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"token": token,
@@ -315,11 +498,37 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Ringkasan keuangan terbaru untuk warga di Beranda
+	var latestIPL, latestKasWarga, latestKasMesjid *FinanceReport
+	for i := range s.store.db.FinanceReports {
+		rep := &s.store.db.FinanceReports[i]
+		switch rep.Type {
+		case "IPL":
+			if latestIPL == nil || rep.Period > latestIPL.Period {
+				latestIPL = rep
+			}
+		case "KAS_WARGA", "KAS":
+			if latestKasWarga == nil || rep.Period > latestKasWarga.Period {
+				latestKasWarga = rep
+			}
+		case "KAS_MESJID":
+			if latestKasMesjid == nil || rep.Period > latestKasMesjid.Period {
+				latestKasMesjid = rep
+			}
+		}
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"announcements": s.store.db.Announcements,
 		"gallery":       s.store.db.Gallery,
+		"activities":    s.store.db.ActivityReports,
 		"umkm":          s.store.db.UmkmItems,
 		"contacts":      s.store.db.Contacts,
+		"finance_summary": map[string]any{
+			"ipl":        latestIPL,
+			"kas_warga":  latestKasWarga,
+			"kas_mesjid": latestKasMesjid,
+		},
 		"stats": map[string]int{
 			"total_houses":    len(s.store.db.Houses),
 			"occupied_houses": occupied,
@@ -394,22 +603,30 @@ func (s *Server) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteAnnouncement(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
 	filtered := make([]Announcement, 0, len(s.store.db.Announcements))
+	var deletedTitle string
 	found := false
 	for _, a := range s.store.db.Announcements {
 		if a.ID == id {
 			found = true
+			deletedTitle = a.Title
 			continue
 		}
 		filtered = append(filtered, a)
 	}
 	if !found {
+		s.store.mu.Unlock()
 		writeError(w, http.StatusNotFound, "Pengumuman tidak ditemukan")
 		return
 	}
 	s.store.db.Announcements = filtered
-	_ = s.store.saveLocked()
+	if err := s.store.saveLocked(); err != nil {
+		s.store.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, "Gagal menghapus pengumuman")
+		return
+	}
+	s.store.mu.Unlock()
+	s.recordAudit(r, "DELETE_ANNOUNCEMENT", deletedTitle, "Hapus pengumuman ID "+id)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -497,9 +714,20 @@ func (s *Server) handleFacilities(w http.ResponseWriter, r *http.Request) {
 		{"month": "Nov", "count": len(s.store.db.Bookings) + 3},
 	}
 
+	user, _ := s.currentUser(r)
+	isAdm := s.hasAnyRole(user, "admin")
+	bookingsOut := make([]FacilityBooking, 0, len(s.store.db.Bookings))
+	for _, b := range s.store.db.Bookings {
+		if !isAdm && !strings.EqualFold(b.HouseCode, user.HouseCode) {
+			b.ResidentName = MaskName(b.ResidentName)
+			b.Phone = ""
+		}
+		bookingsOut = append(bookingsOut, b)
+	}
+
 	writeJSON(w, http.StatusOK, map[string]any{
 		"facilities": s.store.db.Facilities,
-		"bookings":   s.store.db.Bookings,
+		"bookings":   bookingsOut,
 		"summary": map[string]int{
 			"total_assets":  len(s.store.db.Facilities),
 			"env_assets":    len(s.store.db.Assets) + len(s.store.db.Cameras) + len(s.store.db.Facilities),
@@ -533,7 +761,6 @@ func (s *Server) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
 	facName := ""
 	for _, f := range s.store.db.Facilities {
 		if f.ID == body.FacilityID {
@@ -542,8 +769,25 @@ func (s *Server) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if facName == "" {
+		s.store.mu.Unlock()
 		writeError(w, http.StatusNotFound, "Fasilitas tidak ditemukan")
 		return
+	}
+	// Cek bentrok jadwal untuk fasilitas, tanggal, dan slot waktu yang sama
+	for _, existing := range s.store.db.Bookings {
+		if existing.FacilityID == body.FacilityID &&
+			existing.Date == strings.TrimSpace(body.Date) &&
+			strings.EqualFold(existing.TimeSlot, strings.TrimSpace(body.TimeSlot)) &&
+			existing.Status != "Ditolak" {
+			s.store.mu.Unlock()
+			writeError(w, http.StatusConflict, "Jadwal fasilitas pada tanggal dan sesi tersebut sudah dipesan")
+			return
+		}
+	}
+
+	houseCode := strings.TrimSpace(body.HouseCode)
+	if u, ok := s.currentUser(r); ok && !s.hasAnyRole(u, "admin") && u.HouseCode != "" {
+		houseCode = u.HouseCode
 	}
 
 	booking := FacilityBooking{
@@ -551,16 +795,21 @@ func (s *Server) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
 		FacilityID:   body.FacilityID,
 		FacilityName: facName,
 		ResidentName: strings.TrimSpace(body.ResidentName),
-		HouseCode:    strings.TrimSpace(body.HouseCode),
+		HouseCode:    houseCode,
 		Phone:        strings.TrimSpace(body.Phone),
-		Date:         body.Date,
-		TimeSlot:     body.TimeSlot,
+		Date:         strings.TrimSpace(body.Date),
+		TimeSlot:     strings.TrimSpace(body.TimeSlot),
 		Purpose:      strings.TrimSpace(body.Purpose),
 		Status:       "Menunggu",
 		CreatedAt:    time.Now(),
 	}
 	s.store.db.Bookings = append([]FacilityBooking{booking}, s.store.db.Bookings...)
-	_ = s.store.saveLocked()
+	if err := s.store.saveLocked(); err != nil {
+		s.store.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, "Gagal menyimpan pemesanan")
+		return
+	}
+	s.store.mu.Unlock()
 	s.recordAudit(r, "CREATE_BOOKING", booking.FacilityName, booking.Date+" "+booking.TimeSlot)
 	writeJSON(w, http.StatusCreated, booking)
 }
@@ -574,16 +823,29 @@ func (s *Server) handleUpdateBooking(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Format tidak valid")
 		return
 	}
+	switch body.Status {
+	case "Menunggu", "Disetujui", "Ditolak":
+	default:
+		writeError(w, http.StatusBadRequest, "Status booking tidak valid")
+		return
+	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
 	for i := range s.store.db.Bookings {
 		if s.store.db.Bookings[i].ID == id {
 			s.store.db.Bookings[i].Status = body.Status
-			_ = s.store.saveLocked()
-			writeJSON(w, http.StatusOK, s.store.db.Bookings[i])
+			updated := s.store.db.Bookings[i]
+			if err := s.store.saveLocked(); err != nil {
+				s.store.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "Gagal memperbarui status booking")
+				return
+			}
+			s.store.mu.Unlock()
+			s.recordAudit(r, "UPDATE_BOOKING", updated.FacilityName, fmt.Sprintf("%s (%s) -> %s", updated.HouseCode, updated.Date, updated.Status))
+			writeJSON(w, http.StatusOK, updated)
 			return
 		}
 	}
+	s.store.mu.Unlock()
 	writeError(w, http.StatusNotFound, "Booking tidak ditemukan")
 }
 
@@ -591,9 +853,18 @@ func (s *Server) handleUpdateBooking(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTickets(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		user, _ := s.currentUser(r)
+		isStaff := s.hasAnyRole(user, "admin", "keamanan")
 		s.store.mu.RLock()
-		defer s.store.mu.RUnlock()
-		writeJSON(w, http.StatusOK, s.store.db.Tickets)
+		out := make([]Ticket, 0, len(s.store.db.Tickets))
+		for _, t := range s.store.db.Tickets {
+			if !isStaff && !strings.EqualFold(t.HouseCode, user.HouseCode) {
+				t.ReporterName = MaskName(t.ReporterName)
+			}
+			out = append(out, t)
+		}
+		s.store.mu.RUnlock()
+		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var body struct {
 			Category     string `json:"category"`
@@ -611,6 +882,10 @@ func (s *Server) handleTickets(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Kategori, lokasi, nama lengkap, dan deskripsi wajib diisi")
 			return
 		}
+		houseCode := strings.TrimSpace(body.HouseCode)
+		if u, ok := s.currentUser(r); ok && !s.hasAnyRole(u, "admin") && u.HouseCode != "" {
+			houseCode = u.HouseCode
+		}
 		s.store.mu.Lock()
 		now := time.Now()
 		ticket := Ticket{
@@ -619,7 +894,7 @@ func (s *Server) handleTickets(w http.ResponseWriter, r *http.Request) {
 			Category:     body.Category,
 			Location:     body.Location,
 			ReporterName: strings.TrimSpace(body.ReporterName),
-			HouseCode:    strings.TrimSpace(body.HouseCode),
+			HouseCode:    houseCode,
 			Description:  strings.TrimSpace(body.Description),
 			PhotoURL:     body.PhotoURL,
 			Status:       "Open",
@@ -627,7 +902,11 @@ func (s *Server) handleTickets(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt:    now,
 		}
 		s.store.db.Tickets = append([]Ticket{ticket}, s.store.db.Tickets...)
-		_ = s.store.saveLocked()
+		if err := s.store.saveLocked(); err != nil {
+			s.store.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, "Gagal menyimpan tiket")
+			return
+		}
 		s.store.mu.Unlock()
 		s.recordAudit(r, "CREATE_TICKET", ticket.TicketNo, ticket.Category+" - "+ticket.Location)
 		writeJSON(w, http.StatusCreated, ticket)
@@ -646,30 +925,66 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Format tidak valid")
 		return
 	}
+	if body.Status != "" {
+		switch body.Status {
+		case "Open", "Diproses", "Selesai":
+		default:
+			writeError(w, http.StatusBadRequest, "Status tiket tidak valid")
+			return
+		}
+	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
 	for i := range s.store.db.Tickets {
 		if s.store.db.Tickets[i].ID == id {
 			if body.Status != "" {
 				s.store.db.Tickets[i].Status = body.Status
 			}
-			s.store.db.Tickets[i].AdminNote = body.AdminNote
+			s.store.db.Tickets[i].AdminNote = strings.TrimSpace(body.AdminNote)
 			s.store.db.Tickets[i].UpdatedAt = time.Now()
-			_ = s.store.saveLocked()
-			writeJSON(w, http.StatusOK, s.store.db.Tickets[i])
+			updated := s.store.db.Tickets[i]
+			if err := s.store.saveLocked(); err != nil {
+				s.store.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "Gagal memperbarui tiket")
+				return
+			}
+			s.store.mu.Unlock()
+			s.recordAudit(r, "UPDATE_TICKET", updated.TicketNo, "Status -> "+updated.Status)
+			writeJSON(w, http.StatusOK, updated)
 			return
 		}
 	}
+	s.store.mu.Unlock()
 	writeError(w, http.StatusNotFound, "Tiket tidak ditemukan")
+}
+
+func normalizeHouseMatch(block, houseNo string) string {
+	blk := strings.ToUpper(strings.TrimSpace(block))
+	blk = strings.TrimPrefix(blk, "BLOK ")
+	no := strings.ToUpper(strings.TrimSpace(houseNo))
+	no = strings.TrimPrefix(no, "NO.")
+	no = strings.TrimPrefix(no, "NOMOR ")
+	no = strings.TrimSpace(no)
+	if len(no) == 1 && no[0] >= '0' && no[0] <= '9' {
+		return blk + "0" + no
+	}
+	return blk + no
 }
 
 // GET /api/access-cards, POST /api/access-cards
 func (s *Server) handleAccessCards(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		user, _ := s.currentUser(r)
+		isStaff := s.hasAnyRole(user, "admin", "keamanan")
 		s.store.mu.RLock()
-		defer s.store.mu.RUnlock()
-		writeJSON(w, http.StatusOK, s.store.db.AccessCardRequests)
+		out := make([]AccessCardRequest, 0, len(s.store.db.AccessCardRequests))
+		for _, req := range s.store.db.AccessCardRequests {
+			if isStaff || strings.EqualFold(normalizeHouseMatch(req.Block, req.HouseNo), user.HouseCode) {
+				out = append(out, req)
+			}
+		}
+		s.store.mu.RUnlock()
+		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var body struct {
 			FullName     string `json:"full_name"`
@@ -699,7 +1014,11 @@ func (s *Server) handleAccessCards(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:    now,
 		}
 		s.store.db.AccessCardRequests = append([]AccessCardRequest{req}, s.store.db.AccessCardRequests...)
-		_ = s.store.saveLocked()
+		if err := s.store.saveLocked(); err != nil {
+			s.store.mu.Unlock()
+			writeError(w, http.StatusInternalServerError, "Gagal menyimpan pengajuan kartu akses")
+			return
+		}
 		s.store.mu.Unlock()
 		s.recordAudit(r, "CREATE_ACCESS_CARD", req.RequestNo, req.FullName+" ("+req.Block+" No. "+req.HouseNo+")")
 		writeJSON(w, http.StatusCreated, req)
@@ -717,26 +1036,50 @@ func (s *Server) handleUpdateAccessCard(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "Format tidak valid")
 		return
 	}
+	switch body.Status {
+	case "Menunggu Verifikasi", "Diproses", "Siap Diambil", "Ditolak":
+	default:
+		writeError(w, http.StatusBadRequest, "Status kartu akses tidak valid")
+		return
+	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
 	for i := range s.store.db.AccessCardRequests {
 		if s.store.db.AccessCardRequests[i].ID == id {
 			s.store.db.AccessCardRequests[i].Status = body.Status
-			_ = s.store.saveLocked()
-			writeJSON(w, http.StatusOK, s.store.db.AccessCardRequests[i])
+			updated := s.store.db.AccessCardRequests[i]
+			if err := s.store.saveLocked(); err != nil {
+				s.store.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "Gagal memperbarui status kartu akses")
+				return
+			}
+			s.store.mu.Unlock()
+			s.recordAudit(r, "UPDATE_ACCESS_CARD", updated.RequestNo, "Status -> "+updated.Status)
+			writeJSON(w, http.StatusOK, updated)
 			return
 		}
 	}
+	s.store.mu.Unlock()
 	writeError(w, http.StatusNotFound, "Pengajuan kartu akses tidak ditemukan")
 }
 
 // GET /api/assets & POST /api/asset-loans
 func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
+	user, _ := s.currentUser(r)
+	isAdm := s.hasAnyRole(user, "admin")
 	s.store.mu.RLock()
-	defer s.store.mu.RUnlock()
+	loansOut := make([]AssetLoan, 0, len(s.store.db.AssetLoans))
+	for _, l := range s.store.db.AssetLoans {
+		if !isAdm && !strings.EqualFold(l.HouseCode, user.HouseCode) {
+			l.BorrowerName = MaskName(l.BorrowerName)
+			l.Phone = ""
+		}
+		loansOut = append(loansOut, l)
+	}
+	assetsCopy := append([]BorrowableAsset(nil), s.store.db.Assets...)
+	s.store.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"assets": s.store.db.Assets,
-		"loans":  s.store.db.AssetLoans,
+		"assets": assetsCopy,
+		"loans":  loansOut,
 	})
 }
 
@@ -761,9 +1104,17 @@ func (s *Server) handleCreateAssetLoan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Nama peminjam, blok/nomor rumah, dan tanggal wajib diisi")
 		return
 	}
+	if body.ReturnDate != "" && body.ReturnDate < body.BorrowDate {
+		writeError(w, http.StatusBadRequest, "Tanggal kembali tidak boleh lebih awal dari tanggal pinjam")
+		return
+	}
+
+	houseCode := strings.TrimSpace(body.HouseCode)
+	if u, ok := s.currentUser(r); ok && !s.hasAnyRole(u, "admin") && u.HouseCode != "" {
+		houseCode = u.HouseCode
+	}
 
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
 	assetIdx := -1
 	for i, a := range s.store.db.Assets {
 		if a.ID == body.AssetID {
@@ -772,21 +1123,23 @@ func (s *Server) handleCreateAssetLoan(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if assetIdx == -1 {
+		s.store.mu.Unlock()
 		writeError(w, http.StatusNotFound, "Barang tidak ditemukan")
 		return
 	}
 	if s.store.db.Assets[assetIdx].Available < body.Quantity {
+		s.store.mu.Unlock()
 		writeError(w, http.StatusBadRequest, "Stok barang tersedia tidak mencukupi")
 		return
 	}
 
-	s.store.db.Assets[assetIdx].Available -= body.Quantity
+	// Stok dikurangi saat pengurus menyetujui menjadi "Dipinjam" agar pengajuan spam tidak mengunci stok
 	loan := AssetLoan{
 		ID:           generateID("loan"),
 		AssetID:      body.AssetID,
 		AssetName:    s.store.db.Assets[assetIdx].Name,
 		BorrowerName: strings.TrimSpace(body.BorrowerName),
-		HouseCode:    strings.TrimSpace(body.HouseCode),
+		HouseCode:    houseCode,
 		Phone:        strings.TrimSpace(body.Phone),
 		Quantity:     body.Quantity,
 		BorrowDate:   body.BorrowDate,
@@ -795,7 +1148,12 @@ func (s *Server) handleCreateAssetLoan(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:    time.Now(),
 	}
 	s.store.db.AssetLoans = append([]AssetLoan{loan}, s.store.db.AssetLoans...)
-	_ = s.store.saveLocked()
+	if err := s.store.saveLocked(); err != nil {
+		s.store.mu.Unlock()
+		writeError(w, http.StatusInternalServerError, "Gagal menyimpan pengajuan peminjaman")
+		return
+	}
+	s.store.mu.Unlock()
 	s.recordAudit(r, "CREATE_ASSET_LOAN", loan.AssetName, fmt.Sprintf("%d unit (%s)", loan.Quantity, loan.HouseCode))
 	writeJSON(w, http.StatusCreated, loan)
 }
@@ -809,13 +1167,30 @@ func (s *Server) handleUpdateAssetLoan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "Format tidak valid")
 		return
 	}
+	switch body.Status {
+	case "Menunggu", "Dipinjam", "Dikembalikan", "Ditolak":
+	default:
+		writeError(w, http.StatusBadRequest, "Status peminjaman tidak valid")
+		return
+	}
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
 	for i := range s.store.db.AssetLoans {
 		if s.store.db.AssetLoans[i].ID == id {
 			prev := s.store.db.AssetLoans[i].Status
-			s.store.db.AssetLoans[i].Status = body.Status
-			if (body.Status == "Dikembalikan" || body.Status == "Ditolak") && prev != "Dikembalikan" && prev != "Ditolak" {
+			if body.Status == "Dipinjam" && prev != "Dipinjam" {
+				// Kurangi stok saat barang benar-benar dipinjamkan
+				for j := range s.store.db.Assets {
+					if s.store.db.Assets[j].ID == s.store.db.AssetLoans[i].AssetID {
+						if s.store.db.Assets[j].Available < s.store.db.AssetLoans[i].Quantity {
+							s.store.mu.Unlock()
+							writeError(w, http.StatusBadRequest, "Stok barang tidak mencukupi untuk disetujui")
+							return
+						}
+						s.store.db.Assets[j].Available -= s.store.db.AssetLoans[i].Quantity
+					}
+				}
+			} else if (body.Status == "Dikembalikan" || body.Status == "Ditolak") && prev == "Dipinjam" {
+				// Kembalikan stok jika sebelumnya berstatus Dipinjam
 				for j := range s.store.db.Assets {
 					if s.store.db.Assets[j].ID == s.store.db.AssetLoans[i].AssetID {
 						s.store.db.Assets[j].Available += s.store.db.AssetLoans[i].Quantity
@@ -825,11 +1200,20 @@ func (s *Server) handleUpdateAssetLoan(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			_ = s.store.saveLocked()
-			writeJSON(w, http.StatusOK, s.store.db.AssetLoans[i])
+			s.store.db.AssetLoans[i].Status = body.Status
+			updated := s.store.db.AssetLoans[i]
+			if err := s.store.saveLocked(); err != nil {
+				s.store.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "Gagal memperbarui status peminjaman")
+				return
+			}
+			s.store.mu.Unlock()
+			s.recordAudit(r, "UPDATE_ASSET_LOAN", updated.AssetName, fmt.Sprintf("%s -> %s", updated.HouseCode, updated.Status))
+			writeJSON(w, http.StatusOK, updated)
 			return
 		}
 	}
+	s.store.mu.Unlock()
 	writeError(w, http.StatusNotFound, "Data peminjaman tidak ditemukan")
 }
 
@@ -848,17 +1232,22 @@ func (s *Server) handleCctv(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, cams)
 }
 
-// GET /api/finance?type=IPL|KAS
+// GET /api/finance?type=IPL|KAS|KAS_WARGA|KAS_MESJID
 func (s *Server) handleFinance(w http.ResponseWriter, r *http.Request) {
 	kind := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("type")))
 	s.store.mu.RLock()
-	defer s.store.mu.RUnlock()
 	out := []FinanceReport{}
 	for _, rep := range s.store.db.FinanceReports {
-		if kind == "" || rep.Type == kind {
+		if kind == "" || kind == "ALL" {
+			out = append(out, rep)
+		} else if kind == "KAS" && (rep.Type == "KAS" || rep.Type == "KAS_WARGA" || rep.Type == "KAS_MESJID") {
+			out = append(out, rep)
+		} else if rep.Type == kind {
 			out = append(out, rep)
 		}
 	}
+	s.store.mu.RUnlock()
+	sortFinanceReports(out)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -941,6 +1330,10 @@ func (s *Server) handleUmkm(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "Nama produk dan nama penjual wajib diisi")
 			return
 		}
+		if body.Price < 0 {
+			writeError(w, http.StatusBadRequest, "Harga produk tidak boleh negatif")
+			return
+		}
 		body.ID = generateID("umkm")
 		if body.ImageURL == "" {
 			body.ImageURL = "/images/umkm-brownies.png"
@@ -962,9 +1355,17 @@ func (s *Server) handleUmkm(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
+		user, _ := s.currentUser(r)
+		isStaff := s.hasAnyRole(user, "admin", "keamanan")
 		s.store.mu.RLock()
-		defer s.store.mu.RUnlock()
-		writeJSON(w, http.StatusOK, s.store.db.PanicAlerts)
+		out := make([]PanicAlert, 0, len(s.store.db.PanicAlerts))
+		for _, p := range s.store.db.PanicAlerts {
+			if isStaff || strings.EqualFold(p.HouseCode, user.HouseCode) {
+				out = append(out, p)
+			}
+		}
+		s.store.mu.RUnlock()
+		writeJSON(w, http.StatusOK, out)
 	case http.MethodPost:
 		var body struct {
 			ReporterName string `json:"reporter_name"`
@@ -1008,20 +1409,28 @@ func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleResolvePanic(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.store.mu.Lock()
-	defer s.store.mu.Unlock()
 	for i := range s.store.db.PanicAlerts {
 		if s.store.db.PanicAlerts[i].ID == id {
 			s.store.db.PanicAlerts[i].Status = "Ditangani"
-			_ = s.store.saveLocked()
-			writeJSON(w, http.StatusOK, s.store.db.PanicAlerts[i])
+			updated := s.store.db.PanicAlerts[i]
+			if err := s.store.saveLocked(); err != nil {
+				s.store.mu.Unlock()
+				writeError(w, http.StatusInternalServerError, "Gagal memperbarui status panic")
+				return
+			}
+			s.store.mu.Unlock()
+			s.recordAudit(r, "RESOLVE_PANIC", updated.Category, updated.ReporterName+" ("+updated.HouseCode+") -> Ditangani")
+			writeJSON(w, http.StatusOK, updated)
 			return
 		}
 	}
+	s.store.mu.Unlock()
 	writeError(w, http.StatusNotFound, "Alert tidak ditemukan")
 }
 
-// POST /api/upload
+// POST /api/upload (wajib login, validasi ukuran + MIME/magic bytes)
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB max
 		writeError(w, http.StatusBadRequest, "Gagal memproses file upload (maks 10MB)")
 		return
@@ -1041,6 +1450,24 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validasi magic bytes / MIME type untuk mencegah penyamaran file berbahaya
+	sniff := make([]byte, 512)
+	n, _ := file.Read(sniff)
+	detected := http.DetectContentType(sniff[:n])
+	validMime := false
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif":
+		validMime = strings.HasPrefix(detected, "image/")
+	case ".csv":
+		validMime = strings.HasPrefix(detected, "text/") || detected == "application/octet-stream"
+	case ".xlsx", ".xls":
+		validMime = strings.Contains(detected, "zip") || detected == "application/octet-stream" || strings.Contains(detected, "ms-excel")
+	}
+	if !validMime {
+		writeError(w, http.StatusBadRequest, "Isi file tidak sesuai dengan ekstensi yang diunggah")
+		return
+	}
+
 	filename := generateID("img") + ext
 	dstPath := filepath.Join(s.uploadDir, filename)
 	dst, err := os.Create(dstPath)
@@ -1050,6 +1477,10 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dst.Close()
 
+	if _, err := dst.Write(sniff[:n]); err != nil {
+		writeError(w, http.StatusInternalServerError, "Gagal menulis file")
+		return
+	}
 	if _, err := io.Copy(dst, file); err != nil {
 		writeError(w, http.StatusInternalServerError, "Gagal menulis file")
 		return
@@ -1059,6 +1490,17 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		"url":      "/uploads/" + filename,
 		"filename": header.Filename,
 	})
+}
+
+// GET /api/uploads/{filename} -> menyajikan file upload secara terautentikasi
+func (s *Server) handleServeUpload(w http.ResponseWriter, r *http.Request) {
+	name := filepath.Base(r.PathValue("filename"))
+	if name == "" || name == "." || name == "/" {
+		writeError(w, http.StatusBadRequest, "Nama file tidak valid")
+		return
+	}
+	fullPath := filepath.Join(s.uploadDir, name)
+	http.ServeFile(w, r, fullPath)
 }
 
 // GET /api/audit-logs?q=...&action=...&download=csv|xlsx (admin only)
