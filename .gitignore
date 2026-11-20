@@ -18,6 +18,7 @@ backend/.env
 
 # Local-only documentation
 README.local.md
+DEVELOPMENT_GUIDE.md
 
 # Local runtime data & uploads
 backend/data/
