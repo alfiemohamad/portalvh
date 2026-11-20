@@ -23,7 +23,10 @@ README.local.md
 backend/data/
 uploads/
 
-# Archives & OS files
+# Archives, spreadsheets & OS files
 *.zip
+*.xlsx
+*.xls
 .DS_Store
 Thumbs.db
+*.xlsx

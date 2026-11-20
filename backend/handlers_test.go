@@ -55,12 +55,24 @@ func TestCoreEndpoints(t *testing.T) {
 		t.Fatalf("GET /api/dashboard got %d", rec.Code)
 	}
 
-	// 2. Directory
+	// 2. Directory (verify decrypted & masked response)
 	req = httptest.NewRequest(http.MethodGet, "/api/directory?block=Blok%20U", nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /api/directory got %d", rec.Code)
+	}
+	var dirRes struct {
+		Houses []ResidentHouse `json:"houses"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &dirRes); err != nil || len(dirRes.Houses) == 0 {
+		t.Fatalf("expected directory houses, got %s", rec.Body.String())
+	}
+	if dirRes.Houses[0].HeadOfHome == "" || dirRes.Houses[0].HeadOfHome[:4] == "enc:" {
+		t.Fatalf("expected decrypted+masked name, got %q", dirRes.Houses[0].HeadOfHome)
+	}
+	if dirRes.Houses[0].HeadOfHome[1] != '*' {
+		t.Fatalf("expected masked name with asterisks, got %q", dirRes.Houses[0].HeadOfHome)
 	}
 
 	// 3. Create Ticket

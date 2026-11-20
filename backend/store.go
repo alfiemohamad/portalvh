@@ -48,7 +48,7 @@ func (s *Store) saveLocked() error {
 func seedDatabase() Database {
 	now := time.Now()
 
-	// Generate 40 realistic Victoria Hill houses (30 Dihuni, 10 Kosong across blocks U, A, B)
+	// Generate dummy Victoria Hill houses (encrypted PII, never real names)
 	houses := []ResidentHouse{}
 	pengurusMap := map[string]string{
 		"U01": "Ketua Paguyuban",
@@ -57,15 +57,6 @@ func seedDatabase() Database {
 		"B03": "Koordinator Keamanan",
 		"U12": "Koordinator Fasilitas",
 	}
-	names := []string{
-		"Budi Santoso", "Hendra Wijaya", "Siti Rahmawati", "Agus Pratama", "Dewi Lestari",
-		"Rizky Kurniawan", "Nadia Putri", "Fajar Nugroho", "Rina Kusuma", "Dimas Saputra",
-		"Andi Setiawan", "Maya Sari", "Eko Prasetyo", "Lina Marlina", "Arif Hidayat",
-		"Taufik Rahman", "Intan Permata", "Wahyu Utomo", "Yuni Kartika", "Reza Mahendra",
-		"Dian Anggraini", "Hadi Susanto", "Putri Wulandari", "Bayu Ramadhan", "Sari Puspita",
-		"Ilham Akbar", "Citra Kirana", "Rama Aditya", "Wulan Guritno", "Bagas Prakoso",
-	}
-	nameIdx := 0
 	blocks := []struct {
 		prefix string
 		count  int
@@ -74,25 +65,29 @@ func seedDatabase() Database {
 		{"U", 18, 1},
 		{"A", 12, 1},
 		{"B", 10, 1},
+		{"I", 10, 1},
+		{"L", 8, 1},
+		{"O", 6, 1},
 	}
+	idx := 0
 	for _, b := range blocks {
 		for i := 0; i < b.count; i++ {
 			num := b.start + i
 			code := fmt.Sprintf("%s%02d", b.prefix, num)
-			if b.prefix == "U" && num >= 10 {
-				code = fmt.Sprintf("U%d", num)
+			if num >= 10 {
+				code = fmt.Sprintf("%s%d", b.prefix, num)
 			}
-			occupied := nameIdx < 30 && !(i >= b.count-3 && b.prefix != "U") && !(b.prefix == "U" && i >= 14)
+			occupied := i < b.count-2
 			head := ""
 			phone := ""
 			members := 0
 			status := "Kosong"
-			if occupied && nameIdx < len(names) {
+			if occupied {
 				status = "Dihuni"
-				head = names[nameIdx]
-				phone = fmt.Sprintf("0812-8800-%04d", 1000+nameIdx*17)
-				members = 2 + (nameIdx % 4)
-				nameIdx++
+				head = EncryptText(fmt.Sprintf("Penghuni Dummy %s", code))
+				phone = EncryptText(fmt.Sprintf("0812-8800-%04d", 1000+idx*17))
+				members = 2 + (idx % 4)
+				idx++
 			}
 			role := pengurusMap[code]
 			houses = append(houses, ResidentHouse{

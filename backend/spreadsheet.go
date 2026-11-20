@@ -223,8 +223,8 @@ func (s *Server) handleImportDirectory(w http.ResponseWriter, r *http.Request) {
 			Code:       code,
 			HouseNo:    houseNo,
 			Status:     status,
-			HeadOfHome: head,
-			Phone:      phone,
+			HeadOfHome: EncryptText(head),
+			Phone:      EncryptText(phone),
 			Members:    members,
 		}
 		updated := false

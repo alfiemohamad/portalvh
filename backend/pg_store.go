@@ -493,8 +493,10 @@ func (s *Store) savePostgresLocked() error {
 		}
 	}
 	for _, h := range s.db.Houses {
+		encHead := EncryptText(DecryptText(h.HeadOfHome))
+		encPhone := EncryptText(DecryptText(h.Phone))
 		if _, err := tx.Exec(`INSERT INTO resident_houses (id, block, code, house_no, status, head_of_home, phone, members, is_pengurus, role) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-			h.ID, h.Block, h.Code, h.HouseNo, h.Status, h.HeadOfHome, h.Phone, h.Members, h.IsPengurus, h.Role); err != nil {
+			h.ID, h.Block, h.Code, h.HouseNo, h.Status, encHead, encPhone, h.Members, h.IsPengurus, h.Role); err != nil {
 			return err
 		}
 	}

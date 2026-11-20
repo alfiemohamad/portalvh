@@ -204,7 +204,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Lookup resident name if registered
+		// Lookup resident name (decrypt & mask before exposing to session)
 		displayName := "Warga " + code
 		found := false
 		s.store.mu.RLock()
@@ -212,7 +212,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			if strings.EqualFold(h.Code, code) {
 				found = true
 				if h.HeadOfHome != "" {
-					displayName = h.HeadOfHome + " (" + h.Code + ")"
+					plainName := DecryptText(h.HeadOfHome)
+					displayName = MaskName(plainName) + " (" + h.Code + ")"
 				}
 				code = h.Code
 				break
@@ -422,10 +423,19 @@ func (s *Server) handleDirectory(w http.ResponseWriter, r *http.Request) {
 		if block != "" && block != "Semua Blok" && h.Block != block {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(h.Code), query) && !strings.Contains(strings.ToLower(h.HeadOfHome), query) {
+		decryptedHead := DecryptText(h.HeadOfHome)
+		maskedHead := MaskName(decryptedHead)
+		maskedPhone := MaskPhone(DecryptText(h.Phone))
+		if query != "" &&
+			!strings.Contains(strings.ToLower(h.Code), query) &&
+			!strings.Contains(strings.ToLower(maskedHead), query) &&
+			!strings.Contains(strings.ToLower(h.Block), query) {
 			continue
 		}
-		result = append(result, h)
+		maskedHouse := h
+		maskedHouse.HeadOfHome = maskedHead
+		maskedHouse.Phone = maskedPhone
+		result = append(result, maskedHouse)
 	}
 
 	blocks := []string{}
