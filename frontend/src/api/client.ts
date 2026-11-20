@@ -52,10 +52,10 @@ export const api = {
   // Auth
   getAuthHouses: () =>
     request<{ code: string; block: string; status: string }[]>('/auth/houses'),
-  loginResident: (house_code: string, password: string) =>
+  loginResident: (block: string, house_no: string, password: string) =>
     request<{ token: string; user: SessionUser }>('/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ mode: 'resident', house_code, password }),
+      body: JSON.stringify({ mode: 'resident', block, house_no, password }),
     }),
   loginAdmin: (username: string, password: string) =>
     request<{ token: string; user: SessionUser }>('/auth/login', {

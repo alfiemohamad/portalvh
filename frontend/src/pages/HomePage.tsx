@@ -59,18 +59,18 @@ export function HomePage() {
           </div>
 
           {data && (
-            <div className="grid grid-cols-3 gap-3 sm:gap-4 shrink-0">
-              <div className="rounded-2xl bg-white/85 border border-[#dce5df] px-4 py-3 text-center">
-                <div className="text-2xl font-black text-[#1b4532]">{data.stats.occupied_houses}</div>
-                <div className="text-[11px] font-medium text-[#506457]">Rumah Dihuni</div>
+            <div className="grid grid-cols-3 gap-2 sm:gap-4 shrink-0">
+              <div className="rounded-2xl bg-white/85 border border-[#dce5df] px-2.5 sm:px-4 py-3 text-center">
+                <div className="text-xl sm:text-2xl font-black text-[#1b4532]">{data.stats.occupied_houses}</div>
+                <div className="text-[10px] sm:text-[11px] font-medium text-[#506457]">Rumah Dihuni</div>
               </div>
-              <div className="rounded-2xl bg-white/85 border border-[#dce5df] px-4 py-3 text-center">
-                <div className="text-2xl font-black text-[#176b4b]">{data.stats.facilities}</div>
-                <div className="text-[11px] font-medium text-[#506457]">Fasilitas Aktif</div>
+              <div className="rounded-2xl bg-white/85 border border-[#dce5df] px-2.5 sm:px-4 py-3 text-center">
+                <div className="text-xl sm:text-2xl font-black text-[#176b4b]">{data.stats.facilities}</div>
+                <div className="text-[10px] sm:text-[11px] font-medium text-[#506457]">Fasilitas Aktif</div>
               </div>
-              <div className="rounded-2xl bg-white/85 border border-[#dce5df] px-4 py-3 text-center">
-                <div className="text-2xl font-black text-[#ee4129]">{data.stats.open_tickets}</div>
-                <div className="text-[11px] font-medium text-[#506457]">Laporan Aktif</div>
+              <div className="rounded-2xl bg-white/85 border border-[#dce5df] px-2.5 sm:px-4 py-3 text-center">
+                <div className="text-xl sm:text-2xl font-black text-[#ee4129]">{data.stats.open_tickets}</div>
+                <div className="text-[10px] sm:text-[11px] font-medium text-[#506457]">Laporan Aktif</div>
               </div>
             </div>
           )}
@@ -92,17 +92,17 @@ export function HomePage() {
           </Link>
         </div>
 
-        <div className="grid grid-cols-4 lg:grid-cols-8 gap-3 sm:gap-4">
+        <div className="grid grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-4">
           {QUICK_SERVICES.map((svc) => (
             <Link
               key={svc.label}
               to={svc.to}
-              className="group flex flex-col items-center text-center gap-2.5"
+              className="group flex flex-col items-center text-center gap-2"
             >
-              <div className="flex h-16 w-16 sm:h-[76px] sm:w-[76px] items-center justify-center rounded-2xl bg-white border border-[#dce5df] text-[#176b4b] shadow-xs transition group-hover:border-[#176b4b] group-hover:bg-[#eef4ef] group-hover:-translate-y-0.5">
-                <svc.icon className="w-7 h-7 stroke-[1.75]" />
+              <div className="flex h-14 w-14 sm:h-[76px] sm:w-[76px] items-center justify-center rounded-2xl bg-white border border-[#dce5df] text-[#176b4b] shadow-xs transition group-hover:border-[#176b4b] group-hover:bg-[#eef4ef] group-hover:-translate-y-0.5">
+                <svc.icon className="w-6 h-6 sm:w-7 sm:h-7 stroke-[1.75]" />
               </div>
-              <span className="text-xs sm:text-[13px] font-medium text-[#1b4532] leading-snug group-hover:text-[#176b4b]">
+              <span className="text-[11px] sm:text-[13px] font-medium text-[#1b4532] leading-tight group-hover:text-[#176b4b]">
                 {svc.label}
               </span>
             </Link>

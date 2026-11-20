@@ -36,18 +36,18 @@ export function DirectoryPage() {
       <h2 className="text-lg font-bold text-[#17251f] mb-4">Data warga</h2>
 
       {/* 3 Stat Cards — matches Frame 7 */}
-      <div className="grid grid-cols-3 gap-3 sm:gap-5 mb-6">
-        <div className="rounded-2xl bg-[#dff0e4] border border-[#cde3d4] p-4 sm:p-5">
-          <div className="text-xs sm:text-sm font-medium text-[#17251f]">Rumah Terdata</div>
-          <div className="mt-2 text-3xl sm:text-4xl font-bold text-[#42564a]">{summary.total}</div>
+      <div className="grid grid-cols-3 gap-2.5 sm:gap-5 mb-6">
+        <div className="rounded-2xl bg-[#dff0e4] border border-[#cde3d4] p-3 sm:p-5">
+          <div className="text-[11px] sm:text-sm font-medium text-[#17251f]">Rumah Terdata</div>
+          <div className="mt-1.5 sm:mt-2 text-2xl sm:text-4xl font-bold text-[#42564a]">{summary.total}</div>
         </div>
-        <div className="rounded-2xl bg-[#dff0e4] border border-[#cde3d4] p-4 sm:p-5">
-          <div className="text-xs sm:text-sm font-medium text-[#17251f]">Dihuni</div>
-          <div className="mt-2 text-3xl sm:text-4xl font-bold text-[#176b4b]">{summary.occupied}</div>
+        <div className="rounded-2xl bg-[#dff0e4] border border-[#cde3d4] p-3 sm:p-5">
+          <div className="text-[11px] sm:text-sm font-medium text-[#17251f]">Dihuni</div>
+          <div className="mt-1.5 sm:mt-2 text-2xl sm:text-4xl font-bold text-[#176b4b]">{summary.occupied}</div>
         </div>
-        <div className="rounded-2xl bg-[#dff0e4] border border-[#cde3d4] p-4 sm:p-5">
-          <div className="text-xs sm:text-sm font-medium text-[#17251f]">Kosong</div>
-          <div className="mt-2 text-3xl sm:text-4xl font-bold text-[#5c6b63]">{summary.vacant}</div>
+        <div className="rounded-2xl bg-[#dff0e4] border border-[#cde3d4] p-3 sm:p-5">
+          <div className="text-[11px] sm:text-sm font-medium text-[#17251f]">Kosong</div>
+          <div className="mt-1.5 sm:mt-2 text-2xl sm:text-4xl font-bold text-[#5c6b63]">{summary.vacant}</div>
         </div>
       </div>
 

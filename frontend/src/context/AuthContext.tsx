@@ -6,7 +6,7 @@ interface AuthContextValue {
   user: SessionUser | null;
   isAuthenticated: boolean;
   isAdmin: boolean;
-  loginResident: (houseCode: string, password: string) => Promise<void>;
+  loginResident: (block: string, houseNo: string, password: string) => Promise<void>;
   loginAdmin: (username: string, password: string) => Promise<void>;
   logout: () => void;
 }
@@ -25,8 +25,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(u);
   };
 
-  const loginResident = async (houseCode: string, password: string) => {
-    const res = await api.loginResident(houseCode, password);
+  const loginResident = async (block: string, houseNo: string, password: string) => {
+    const res = await api.loginResident(block, houseNo, password);
     saveSession(res.token, res.user);
   };
 

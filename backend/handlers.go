@@ -166,10 +166,12 @@ func (s *Server) handleAuthHouses(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// POST /api/auth/login -> mendukung mode "resident" (blok rumah + password warga) dan "admin" (username + password pengurus)
+// POST /api/auth/login -> mendukung mode "resident" (blok + nomor rumah + password warga) dan "admin" (username + password pengurus)
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Mode      string `json:"mode"` // "resident" or "admin"
+		Block     string `json:"block"`
+		HouseNo   string `json:"house_no"`
 		HouseCode string `json:"house_code"`
 		Username  string `json:"username"`
 		Password  string `json:"password"`
@@ -181,7 +183,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	mode := strings.ToLower(strings.TrimSpace(body.Mode))
 	if mode == "" {
-		if strings.TrimSpace(body.HouseCode) != "" {
+		if strings.TrimSpace(body.HouseCode) != "" || strings.TrimSpace(body.Block) != "" {
 			mode = "resident"
 		} else {
 			mode = "admin"
@@ -194,36 +196,47 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusServiceUnavailable, "Password warga belum dikonfigurasi di environment (.env)")
 			return
 		}
-		code := strings.ToUpper(strings.TrimSpace(body.HouseCode))
-		if code == "" {
-			writeError(w, http.StatusBadRequest, "Blok / nomor rumah wajib dipilih")
-			return
-		}
 		if body.Password != resPass {
 			writeError(w, http.StatusUnauthorized, "Password warga salah")
 			return
 		}
 
+		blk := strings.ToUpper(strings.TrimSpace(body.Block))
+		blk = strings.TrimPrefix(blk, "BLOK ")
+		blk = strings.TrimSpace(blk)
+		no := strings.ToUpper(strings.TrimSpace(body.HouseNo))
+		no = strings.TrimPrefix(no, "NO.")
+		no = strings.TrimPrefix(no, "NOMOR ")
+		no = strings.TrimSpace(no)
+
+		code := strings.ToUpper(strings.TrimSpace(body.HouseCode))
+		if code == "" && blk != "" && no != "" {
+			if len(no) == 1 && no[0] >= '0' && no[0] <= '9' {
+				code = blk + "0" + no
+			} else {
+				code = blk + no
+			}
+		}
+		if code == "" {
+			writeError(w, http.StatusBadRequest, "Blok dan nomor rumah wajib diisi")
+			return
+		}
+
 		// Lookup resident name (decrypt & mask before exposing to session)
 		displayName := "Warga " + code
-		found := false
 		s.store.mu.RLock()
 		for _, h := range s.store.db.Houses {
-			if strings.EqualFold(h.Code, code) {
-				found = true
+			altCode := blk + no
+			if strings.EqualFold(h.Code, code) || (altCode != "" && strings.EqualFold(h.Code, altCode)) {
+				code = h.Code
 				if h.HeadOfHome != "" {
 					plainName := DecryptText(h.HeadOfHome)
 					displayName = MaskName(plainName) + " (" + h.Code + ")"
 				}
-				code = h.Code
 				break
 			}
 		}
 		s.store.mu.RUnlock()
-		if !found {
-			writeError(w, http.StatusNotFound, "Kode rumah tidak ditemukan di direktori Victoria Hill")
-			return
-		}
 
 		b := make([]byte, 16)
 		_, _ = rand.Read(b)
@@ -238,7 +251,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		s.tokens[token] = user
 		s.tokensMu.Unlock()
 
-		s.recordAuditUser(user, r, "LOGIN_WARGA", "Portal Warga", "Login menggunakan blok rumah "+code)
+		s.recordAuditUser(user, r, "LOGIN_WARGA", "Portal Warga", "Login warga "+code)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"token": token,
 			"user":  user,
