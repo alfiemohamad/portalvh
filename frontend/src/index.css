@@ -1,0 +1,40 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Roboto", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --color-vh-forest: #1b4532;
+  --color-vh-forest-dark: #133325;
+  --color-vh-emerald: #176b4b;
+  --color-vh-mint: #82e4b0;
+  --color-vh-coral: #ee4129;
+  --color-vh-coral-hover: #d8351e;
+  --color-vh-ink: #17251f;
+  --color-vh-muted: #506457;
+  --color-vh-surface: #f7f9f7;
+  --color-vh-card: #ffffff;
+  --color-vh-sage-soft: #eef4ef;
+  --color-vh-sage-border: #dce5df;
+  --color-vh-warm-bg: #fff7ed;
+  --color-vh-warm-border: #e8c6aa;
+  --color-vh-warm-ink: #873e13;
+}
+
+@layer base {
+  html {
+    font-family: var(--font-sans);
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-vh-surface);
+    color: var(--color-vh-ink);
+  }
+}
+
+.vh-hero-gradient {
+  background: linear-gradient(135deg, #eef6f0 0%, #f5f8f4 55%, #f5efe3 100%);
+}
+
+.vh-asset-banner {
+  background: linear-gradient(135deg, #0d3626 0%, #154d37 55%, #0c2e22 100%);
+}

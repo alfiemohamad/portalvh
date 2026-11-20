@@ -1,0 +1,861 @@
+package main
+
+import (
+	"crypto/rand"
+	"encoding/csv"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/xuri/excelize/v2"
+)
+
+type Server struct {
+	store     *Store
+	uploadDir string
+	tokensMu  sync.RWMutex
+	tokens    map[string]string // token -> admin username
+}
+
+func NewServer(store *Store, uploadDir string) *Server {
+	_ = os.MkdirAll(uploadDir, 0o755)
+	return &Server{
+		store:     store,
+		uploadDir: uploadDir,
+		tokens:    make(map[string]string),
+	}
+}
+
+func generateID(prefix string) string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return fmt.Sprintf("%s-%s", prefix, hex.EncodeToString(b))
+}
+
+func writeJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeError(w http.ResponseWriter, status int, msg string) {
+	writeJSON(w, status, map[string]string{"error": msg})
+}
+
+func (s *Server) isAdmin(r *http.Request) bool {
+	auth := r.Header.Get("Authorization")
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
+	}
+	token := strings.TrimPrefix(auth, "Bearer ")
+	s.tokensMu.RLock()
+	defer s.tokensMu.RUnlock()
+	_, ok := s.tokens[token]
+	return ok
+}
+
+func (s *Server) requireAdmin(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.isAdmin(r) {
+			writeError(w, http.StatusUnauthorized, "Akses khusus pengurus. Silakan login terlebih dahulu.")
+			return
+		}
+		next(w, r)
+	}
+}
+
+// POST /api/auth/login
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "Format request tidak valid")
+		return
+	}
+	adminUser := strings.TrimSpace(strings.ToLower(os.Getenv("ADMIN_USERNAME")))
+	adminPass := os.Getenv("ADMIN_PASSWORD")
+	if adminUser == "" || adminPass == "" {
+		writeError(w, http.StatusServiceUnavailable, "Kredensial pengurus belum dikonfigurasi di environment (.env)")
+		return
+	}
+	u := strings.TrimSpace(strings.ToLower(body.Username))
+	if u == adminUser && body.Password == adminPass {
+		b := make([]byte, 16)
+		_, _ = rand.Read(b)
+		token := hex.EncodeToString(b)
+		s.tokensMu.Lock()
+		s.tokens[token] = "Pengurus Victoria Hill"
+		s.tokensMu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"token": token,
+			"user": map[string]string{
+				"username": u,
+				"name":     "Pengurus Victoria Hill",
+				"role":     "Pengurus",
+			},
+		})
+		return
+	}
+	writeError(w, http.StatusUnauthorized, "Username atau password pengurus salah")
+}
+
+// GET /api/dashboard
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+
+	openTickets := 0
+	doneTickets := 0
+	for _, t := range s.store.db.Tickets {
+		if t.Status == "Selesai" {
+			doneTickets++
+		} else {
+			openTickets++
+		}
+	}
+
+	occupied := 0
+	vacant := 0
+	for _, h := range s.store.db.Houses {
+		if h.Status == "Dihuni" {
+			occupied++
+		} else {
+			vacant++
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"announcements": s.store.db.Announcements,
+		"gallery":       s.store.db.Gallery,
+		"umkm":          s.store.db.UmkmItems,
+		"contacts":      s.store.db.Contacts,
+		"stats": map[string]int{
+			"total_houses":    len(s.store.db.Houses),
+			"occupied_houses": occupied,
+			"vacant_houses":   vacant,
+			"facilities":      len(s.store.db.Facilities),
+			"open_tickets":    openTickets,
+			"done_tickets":    doneTickets,
+			"active_panics":   countActivePanics(s.store.db.PanicAlerts),
+		},
+	})
+}
+
+func countActivePanics(alerts []PanicAlert) int {
+	n := 0
+	for _, a := range alerts {
+		if a.Status == "Aktif" {
+			n++
+		}
+	}
+	return n
+}
+
+// GET /api/announcements, POST /api/announcements (admin), DELETE /api/announcements/{id} (admin)
+func (s *Server) handleAnnouncements(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.store.mu.RLock()
+		defer s.store.mu.RUnlock()
+		writeJSON(w, http.StatusOK, s.store.db.Announcements)
+	case http.MethodPost:
+		if !s.isAdmin(r) {
+			writeError(w, http.StatusUnauthorized, "Akses khusus pengurus")
+			return
+		}
+		var body struct {
+			Title    string `json:"title"`
+			Content  string `json:"content"`
+			Category string `json:"category"`
+			Pinned   bool   `json:"pinned"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "Data pengumuman tidak valid")
+			return
+		}
+		if strings.TrimSpace(body.Title) == "" || strings.TrimSpace(body.Content) == "" {
+			writeError(w, http.StatusBadRequest, "Judul dan isi pengumuman wajib diisi")
+			return
+		}
+		if body.Category == "" {
+			body.Category = "Umum"
+		}
+		item := Announcement{
+			ID:        generateID("ann"),
+			Title:     strings.TrimSpace(body.Title),
+			Content:   strings.TrimSpace(body.Content),
+			Category:  body.Category,
+			Author:    "Pengurus Victoria Hill",
+			Pinned:    body.Pinned,
+			CreatedAt: time.Now(),
+		}
+		s.store.mu.Lock()
+		s.store.db.Announcements = append([]Announcement{item}, s.store.db.Announcements...)
+		_ = s.store.saveLocked()
+		s.store.mu.Unlock()
+		writeJSON(w, http.StatusCreated, item)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak didukung")
+	}
+}
+
+func (s *Server) handleDeleteAnnouncement(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	filtered := make([]Announcement, 0, len(s.store.db.Announcements))
+	found := false
+	for _, a := range s.store.db.Announcements {
+		if a.ID == id {
+			found = true
+			continue
+		}
+		filtered = append(filtered, a)
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "Pengumuman tidak ditemukan")
+		return
+	}
+	s.store.db.Announcements = filtered
+	_ = s.store.saveLocked()
+	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+// GET /api/directory?block=...&q=...
+func (s *Server) handleDirectory(w http.ResponseWriter, r *http.Request) {
+	block := strings.TrimSpace(r.URL.Query().Get("block"))
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+
+	blocksSet := map[string]bool{}
+	occupied := 0
+	vacant := 0
+	result := []ResidentHouse{}
+
+	for _, h := range s.store.db.Houses {
+		blocksSet[h.Block] = true
+		if h.Status == "Dihuni" {
+			occupied++
+		} else {
+			vacant++
+		}
+		if block != "" && block != "Semua Blok" && h.Block != block {
+			continue
+		}
+		if query != "" && !strings.Contains(strings.ToLower(h.Code), query) && !strings.Contains(strings.ToLower(h.HeadOfHome), query) {
+			continue
+		}
+		result = append(result, h)
+	}
+
+	blocks := []string{}
+	for b := range blocksSet {
+		blocks = append(blocks, b)
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"summary": map[string]int{
+			"total":    len(s.store.db.Houses),
+			"occupied": occupied,
+			"vacant":   vacant,
+		},
+		"blocks": blocks,
+		"houses": result,
+	})
+}
+
+// GET /api/facilities
+func (s *Server) handleFacilities(w http.ResponseWriter, r *http.Request) {
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+
+	maintenance := 0
+	for _, f := range s.store.db.Facilities {
+		if f.Status == "Pemeliharaan" {
+			maintenance++
+		}
+	}
+	openTickets := 0
+	doneTickets := 0
+	for _, t := range s.store.db.Tickets {
+		if t.Status == "Selesai" {
+			doneTickets++
+		} else {
+			openTickets++
+		}
+	}
+
+	monthlyUsage := []map[string]any{
+		{"month": "Jun", "count": 4},
+		{"month": "Jul", "count": 6},
+		{"month": "Agu", "count": 9},
+		{"month": "Sep", "count": 5},
+		{"month": "Okt", "count": 7},
+		{"month": "Nov", "count": len(s.store.db.Bookings) + 3},
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"facilities": s.store.db.Facilities,
+		"bookings":   s.store.db.Bookings,
+		"summary": map[string]int{
+			"total_assets":  len(s.store.db.Facilities),
+			"env_assets":    len(s.store.db.Assets) + len(s.store.db.Cameras) + len(s.store.db.Facilities),
+			"facilities":    len(s.store.db.Facilities),
+			"maintenance":   maintenance,
+			"tickets_open":  openTickets,
+			"tickets_done":  doneTickets,
+		},
+		"monthly_usage": monthlyUsage,
+	})
+}
+
+// POST /api/bookings, PATCH /api/bookings/{id}
+func (s *Server) handleCreateBooking(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		FacilityID   string `json:"facility_id"`
+		ResidentName string `json:"resident_name"`
+		HouseCode    string `json:"house_code"`
+		Phone        string `json:"phone"`
+		Date         string `json:"date"`
+		TimeSlot     string `json:"time_slot"`
+		Purpose      string `json:"purpose"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "Format booking tidak valid")
+		return
+	}
+	if strings.TrimSpace(body.FacilityID) == "" || strings.TrimSpace(body.ResidentName) == "" || strings.TrimSpace(body.Date) == "" {
+		writeError(w, http.StatusBadRequest, "Fasilitas, nama warga, dan tanggal wajib diisi")
+		return
+	}
+
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	facName := ""
+	for _, f := range s.store.db.Facilities {
+		if f.ID == body.FacilityID {
+			facName = f.Name
+			break
+		}
+	}
+	if facName == "" {
+		writeError(w, http.StatusNotFound, "Fasilitas tidak ditemukan")
+		return
+	}
+
+	booking := FacilityBooking{
+		ID:           generateID("book"),
+		FacilityID:   body.FacilityID,
+		FacilityName: facName,
+		ResidentName: strings.TrimSpace(body.ResidentName),
+		HouseCode:    strings.TrimSpace(body.HouseCode),
+		Phone:        strings.TrimSpace(body.Phone),
+		Date:         body.Date,
+		TimeSlot:     body.TimeSlot,
+		Purpose:      strings.TrimSpace(body.Purpose),
+		Status:       "Menunggu",
+		CreatedAt:    time.Now(),
+	}
+	s.store.db.Bookings = append([]FacilityBooking{booking}, s.store.db.Bookings...)
+	_ = s.store.saveLocked()
+	writeJSON(w, http.StatusCreated, booking)
+}
+
+func (s *Server) handleUpdateBooking(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "Format tidak valid")
+		return
+	}
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	for i := range s.store.db.Bookings {
+		if s.store.db.Bookings[i].ID == id {
+			s.store.db.Bookings[i].Status = body.Status
+			_ = s.store.saveLocked()
+			writeJSON(w, http.StatusOK, s.store.db.Bookings[i])
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "Booking tidak ditemukan")
+}
+
+// GET /api/tickets, POST /api/tickets
+func (s *Server) handleTickets(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.store.mu.RLock()
+		defer s.store.mu.RUnlock()
+		writeJSON(w, http.StatusOK, s.store.db.Tickets)
+	case http.MethodPost:
+		var body struct {
+			Category     string `json:"category"`
+			Location     string `json:"location"`
+			ReporterName string `json:"reporter_name"`
+			HouseCode    string `json:"house_code"`
+			Description  string `json:"description"`
+			PhotoURL     string `json:"photo_url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "Format laporan tidak valid")
+			return
+		}
+		if strings.TrimSpace(body.Category) == "" || strings.TrimSpace(body.Location) == "" || strings.TrimSpace(body.ReporterName) == "" || strings.TrimSpace(body.Description) == "" {
+			writeError(w, http.StatusBadRequest, "Kategori, lokasi, nama lengkap, dan deskripsi wajib diisi")
+			return
+		}
+		s.store.mu.Lock()
+		now := time.Now()
+		ticket := Ticket{
+			ID:           generateID("tkt"),
+			TicketNo:     fmt.Sprintf("VH-%d-%03d", now.Year(), len(s.store.db.Tickets)+1),
+			Category:     body.Category,
+			Location:     body.Location,
+			ReporterName: strings.TrimSpace(body.ReporterName),
+			HouseCode:    strings.TrimSpace(body.HouseCode),
+			Description:  strings.TrimSpace(body.Description),
+			PhotoURL:     body.PhotoURL,
+			Status:       "Open",
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		}
+		s.store.db.Tickets = append([]Ticket{ticket}, s.store.db.Tickets...)
+		_ = s.store.saveLocked()
+		s.store.mu.Unlock()
+		writeJSON(w, http.StatusCreated, ticket)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak didukung")
+	}
+}
+
+func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Status    string `json:"status"`
+		AdminNote string `json:"admin_note"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "Format tidak valid")
+		return
+	}
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	for i := range s.store.db.Tickets {
+		if s.store.db.Tickets[i].ID == id {
+			if body.Status != "" {
+				s.store.db.Tickets[i].Status = body.Status
+			}
+			s.store.db.Tickets[i].AdminNote = body.AdminNote
+			s.store.db.Tickets[i].UpdatedAt = time.Now()
+			_ = s.store.saveLocked()
+			writeJSON(w, http.StatusOK, s.store.db.Tickets[i])
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "Tiket tidak ditemukan")
+}
+
+// GET /api/access-cards, POST /api/access-cards
+func (s *Server) handleAccessCards(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.store.mu.RLock()
+		defer s.store.mu.RUnlock()
+		writeJSON(w, http.StatusOK, s.store.db.AccessCardRequests)
+	case http.MethodPost:
+		var body struct {
+			FullName     string `json:"full_name"`
+			Block        string `json:"block"`
+			HouseNo      string `json:"house_no"`
+			StnkPhotoURL string `json:"stnk_photo_url"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "Format pengajuan tidak valid")
+			return
+		}
+		if strings.TrimSpace(body.FullName) == "" || strings.TrimSpace(body.Block) == "" || strings.TrimSpace(body.HouseNo) == "" {
+			writeError(w, http.StatusBadRequest, "Nama lengkap, blok rumah, dan nomor rumah wajib diisi")
+			return
+		}
+		s.store.mu.Lock()
+		now := time.Now()
+		req := AccessCardRequest{
+			ID:           generateID("ac"),
+			RequestNo:    fmt.Sprintf("KA-%d-%03d", now.Year(), len(s.store.db.AccessCardRequests)+1),
+			FullName:     strings.TrimSpace(body.FullName),
+			Block:        strings.TrimSpace(body.Block),
+			HouseNo:      strings.TrimSpace(body.HouseNo),
+			StnkPhotoURL: body.StnkPhotoURL,
+			Fee:          50000,
+			Status:       "Menunggu Verifikasi",
+			CreatedAt:    now,
+		}
+		s.store.db.AccessCardRequests = append([]AccessCardRequest{req}, s.store.db.AccessCardRequests...)
+		_ = s.store.saveLocked()
+		s.store.mu.Unlock()
+		writeJSON(w, http.StatusCreated, req)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak didukung")
+	}
+}
+
+func (s *Server) handleUpdateAccessCard(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "Format tidak valid")
+		return
+	}
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	for i := range s.store.db.AccessCardRequests {
+		if s.store.db.AccessCardRequests[i].ID == id {
+			s.store.db.AccessCardRequests[i].Status = body.Status
+			_ = s.store.saveLocked()
+			writeJSON(w, http.StatusOK, s.store.db.AccessCardRequests[i])
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "Pengajuan kartu akses tidak ditemukan")
+}
+
+// GET /api/assets & POST /api/asset-loans
+func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"assets": s.store.db.Assets,
+		"loans":  s.store.db.AssetLoans,
+	})
+}
+
+func (s *Server) handleCreateAssetLoan(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		AssetID      string `json:"asset_id"`
+		BorrowerName string `json:"borrower_name"`
+		HouseCode    string `json:"house_code"`
+		Phone        string `json:"phone"`
+		Quantity     int    `json:"quantity"`
+		BorrowDate   string `json:"borrow_date"`
+		ReturnDate   string `json:"return_date"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "Format peminjaman tidak valid")
+		return
+	}
+	if body.Quantity <= 0 {
+		body.Quantity = 1
+	}
+	if strings.TrimSpace(body.BorrowerName) == "" || strings.TrimSpace(body.HouseCode) == "" || body.BorrowDate == "" {
+		writeError(w, http.StatusBadRequest, "Nama peminjam, blok/nomor rumah, dan tanggal wajib diisi")
+		return
+	}
+
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	assetIdx := -1
+	for i, a := range s.store.db.Assets {
+		if a.ID == body.AssetID {
+			assetIdx = i
+			break
+		}
+	}
+	if assetIdx == -1 {
+		writeError(w, http.StatusNotFound, "Barang tidak ditemukan")
+		return
+	}
+	if s.store.db.Assets[assetIdx].Available < body.Quantity {
+		writeError(w, http.StatusBadRequest, "Stok barang tersedia tidak mencukupi")
+		return
+	}
+
+	s.store.db.Assets[assetIdx].Available -= body.Quantity
+	loan := AssetLoan{
+		ID:           generateID("loan"),
+		AssetID:      body.AssetID,
+		AssetName:    s.store.db.Assets[assetIdx].Name,
+		BorrowerName: strings.TrimSpace(body.BorrowerName),
+		HouseCode:    strings.TrimSpace(body.HouseCode),
+		Phone:        strings.TrimSpace(body.Phone),
+		Quantity:     body.Quantity,
+		BorrowDate:   body.BorrowDate,
+		ReturnDate:   body.ReturnDate,
+		Status:       "Menunggu",
+		CreatedAt:    time.Now(),
+	}
+	s.store.db.AssetLoans = append([]AssetLoan{loan}, s.store.db.AssetLoans...)
+	_ = s.store.saveLocked()
+	writeJSON(w, http.StatusCreated, loan)
+}
+
+func (s *Server) handleUpdateAssetLoan(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body struct {
+		Status string `json:"status"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "Format tidak valid")
+		return
+	}
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	for i := range s.store.db.AssetLoans {
+		if s.store.db.AssetLoans[i].ID == id {
+			prev := s.store.db.AssetLoans[i].Status
+			s.store.db.AssetLoans[i].Status = body.Status
+			if (body.Status == "Dikembalikan" || body.Status == "Ditolak") && prev != "Dikembalikan" && prev != "Ditolak" {
+				for j := range s.store.db.Assets {
+					if s.store.db.Assets[j].ID == s.store.db.AssetLoans[i].AssetID {
+						s.store.db.Assets[j].Available += s.store.db.AssetLoans[i].Quantity
+						if s.store.db.Assets[j].Available > s.store.db.Assets[j].TotalQty {
+							s.store.db.Assets[j].Available = s.store.db.Assets[j].TotalQty
+						}
+					}
+				}
+			}
+			_ = s.store.saveLocked()
+			writeJSON(w, http.StatusOK, s.store.db.AssetLoans[i])
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "Data peminjaman tidak ditemukan")
+}
+
+// GET /api/cctv
+func (s *Server) handleCctv(w http.ResponseWriter, r *http.Request) {
+	area := strings.TrimSpace(r.URL.Query().Get("area"))
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+	cams := []CctvCamera{}
+	for _, c := range s.store.db.Cameras {
+		if area != "" && area != "Semua" && c.Area != area {
+			continue
+		}
+		cams = append(cams, c)
+	}
+	writeJSON(w, http.StatusOK, cams)
+}
+
+// GET /api/finance?type=IPL|KAS
+func (s *Server) handleFinance(w http.ResponseWriter, r *http.Request) {
+	kind := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("type")))
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+	out := []FinanceReport{}
+	for _, rep := range s.store.db.FinanceReports {
+		if kind == "" || rep.Type == kind {
+			out = append(out, rep)
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// GET /api/finance/{id}/download?format=csv|xlsx -> real CSV or Excel report download
+func (s *Server) handleDownloadFinance(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format != "xlsx" {
+		format = "csv"
+	}
+
+	s.store.mu.RLock()
+	defer s.store.mu.RUnlock()
+
+	var target *FinanceReport
+	for i := range s.store.db.FinanceReports {
+		if s.store.db.FinanceReports[i].ID == id {
+			target = &s.store.db.FinanceReports[i]
+			break
+		}
+	}
+	if target == nil {
+		writeError(w, http.StatusNotFound, "Laporan tidak ditemukan")
+		return
+	}
+
+	if format == "xlsx" {
+		f := excelize.NewFile()
+		sheet := "Laporan"
+		_ = f.SetSheetName("Sheet1", sheet)
+		_ = f.SetSheetRow(sheet, "A1", &[]any{"Laporan", target.Type + " Victoria Hill", "Periode", target.MonthLabel})
+		_ = f.SetSheetRow(sheet, "A2", &[]any{"Total Pemasukan", target.TotalIncome, "Total Pengeluaran", target.TotalSpend})
+		_ = f.SetSheetRow(sheet, "A3", &[]any{"Saldo Akhir", target.Balance})
+		_ = f.SetSheetRow(sheet, "A5", &[]any{"Tanggal", "Keterangan", "Kategori", "Jenis", "Nominal (IDR)"})
+		for idx, item := range target.Items {
+			cell := fmt.Sprintf("A%d", idx+6)
+			_ = f.SetSheetRow(sheet, cell, &[]any{item.Date, item.Description, item.Category, item.Kind, item.Amount})
+		}
+		filename := fmt.Sprintf("Laporan_%s_VictoriaHill_%s.xlsx", target.Type, target.Period)
+		w.Header().Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+		_ = f.Write(w)
+		return
+	}
+
+	filename := fmt.Sprintf("Laporan_%s_VictoriaHill_%s.csv", target.Type, target.Period)
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", filename))
+
+	writer := csv.NewWriter(w)
+	_ = writer.Write([]string{"Laporan", target.Type + " Victoria Hill", "Periode", target.MonthLabel})
+	_ = writer.Write([]string{"Total Pemasukan", fmt.Sprintf("Rp %d", target.TotalIncome), "Total Pengeluaran", fmt.Sprintf("Rp %d", target.TotalSpend)})
+	_ = writer.Write([]string{"Saldo Akhir", fmt.Sprintf("Rp %d", target.Balance)})
+	_ = writer.Write([]string{})
+	_ = writer.Write([]string{"Tanggal", "Keterangan", "Kategori", "Jenis", "Nominal (IDR)"})
+	for _, item := range target.Items {
+		_ = writer.Write([]string{item.Date, item.Description, item.Category, item.Kind, fmt.Sprintf("%d", item.Amount)})
+	}
+	writer.Flush()
+}
+
+// GET /api/umkm, POST /api/umkm
+func (s *Server) handleUmkm(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.store.mu.RLock()
+		defer s.store.mu.RUnlock()
+		writeJSON(w, http.StatusOK, s.store.db.UmkmItems)
+	case http.MethodPost:
+		var body UmkmItem
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "Format UMKM tidak valid")
+			return
+		}
+		if strings.TrimSpace(body.Name) == "" || strings.TrimSpace(body.SellerName) == "" {
+			writeError(w, http.StatusBadRequest, "Nama produk dan nama penjual wajib diisi")
+			return
+		}
+		body.ID = generateID("umkm")
+		if body.ImageURL == "" {
+			body.ImageURL = "/images/umkm-brownies.png"
+		}
+		if body.Category == "" {
+			body.Category = "Kuliner"
+		}
+		s.store.mu.Lock()
+		s.store.db.UmkmItems = append([]UmkmItem{body}, s.store.db.UmkmItems...)
+		_ = s.store.saveLocked()
+		s.store.mu.Unlock()
+		writeJSON(w, http.StatusCreated, body)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak didukung")
+	}
+}
+
+// GET /api/panic, POST /api/panic, PATCH /api/panic/{id}
+func (s *Server) handlePanic(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.store.mu.RLock()
+		defer s.store.mu.RUnlock()
+		writeJSON(w, http.StatusOK, s.store.db.PanicAlerts)
+	case http.MethodPost:
+		var body struct {
+			ReporterName string `json:"reporter_name"`
+			HouseCode    string `json:"house_code"`
+			Category     string `json:"category"`
+			Note         string `json:"note"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "Format darurat tidak valid")
+			return
+		}
+		if strings.TrimSpace(body.HouseCode) == "" {
+			body.HouseCode = "Tidak disebutkan"
+		}
+		if strings.TrimSpace(body.ReporterName) == "" {
+			body.ReporterName = "Warga Victoria Hill"
+		}
+		if strings.TrimSpace(body.Category) == "" {
+			body.Category = "Keamanan"
+		}
+		alert := PanicAlert{
+			ID:           generateID("panic"),
+			ReporterName: strings.TrimSpace(body.ReporterName),
+			HouseCode:    strings.TrimSpace(body.HouseCode),
+			Category:     body.Category,
+			Note:         strings.TrimSpace(body.Note),
+			Status:       "Aktif",
+			CreatedAt:    time.Now(),
+		}
+		s.store.mu.Lock()
+		s.store.db.PanicAlerts = append([]PanicAlert{alert}, s.store.db.PanicAlerts...)
+		_ = s.store.saveLocked()
+		s.store.mu.Unlock()
+		writeJSON(w, http.StatusCreated, alert)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "Method tidak didukung")
+	}
+}
+
+func (s *Server) handleResolvePanic(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.store.mu.Lock()
+	defer s.store.mu.Unlock()
+	for i := range s.store.db.PanicAlerts {
+		if s.store.db.PanicAlerts[i].ID == id {
+			s.store.db.PanicAlerts[i].Status = "Ditangani"
+			_ = s.store.saveLocked()
+			writeJSON(w, http.StatusOK, s.store.db.PanicAlerts[i])
+			return
+		}
+	}
+	writeError(w, http.StatusNotFound, "Alert tidak ditemukan")
+}
+
+// POST /api/upload
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(10 << 20); err != nil { // 10MB max
+		writeError(w, http.StatusBadRequest, "Gagal memproses file upload (maks 10MB)")
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "Field 'file' wajib disertakan")
+		return
+	}
+	defer file.Close()
+
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	switch ext {
+	case ".jpg", ".jpeg", ".png", ".webp", ".gif", ".csv", ".xlsx", ".xls":
+	default:
+		writeError(w, http.StatusBadRequest, "Format file harus JPG, PNG, WEBP, CSV, atau Excel (.xlsx)")
+		return
+	}
+
+	filename := generateID("img") + ext
+	dstPath := filepath.Join(s.uploadDir, filename)
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "Gagal menyimpan file")
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		writeError(w, http.StatusInternalServerError, "Gagal menulis file")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{
+		"url":      "/uploads/" + filename,
+		"filename": header.Filename,
+	})
+}
